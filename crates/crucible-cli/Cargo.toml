@@ -1,0 +1,18 @@
+[package]
+name = "crucible-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tempfile.workspace = true
+which.workspace = true
+git2.workspace = true
+
+libcrucible = { path = "../libcrucible" }

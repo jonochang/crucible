@@ -1,0 +1,216 @@
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrucibleConfig {
+    pub crucible: CrucibleSection,
+    pub gate: GateConfig,
+    pub context: ContextConfig,
+    pub coordinator: CoordinatorConfig,
+    pub verdict: VerdictConfig,
+    pub rate_limits: RateLimitConfig,
+    pub plugins: PluginsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrucibleSection {
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GateConfig {
+    pub enabled: bool,
+    pub untangle_bin: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextConfig {
+    pub reference_max_depth: usize,
+    pub reference_max_files: usize,
+    pub history_max_commits: usize,
+    pub history_max_days: u32,
+    pub docs_patterns: Vec<String>,
+    pub docs_max_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoordinatorConfig {
+    pub max_rounds: u8,
+    pub quorum_threshold: f32,
+    pub agent_timeout_secs: u64,
+    pub devil_advocate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerdictConfig {
+    pub block_on: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    pub anthropic_rpm: u32,
+    pub google_rpm: u32,
+    pub openai_rpm: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginsConfig {
+    pub agents: Vec<String>,
+    pub judge: String,
+    pub analyzer: String,
+    pub paths: Vec<String>,
+    #[serde(rename = "claude-code")]
+    pub claude_code: CliPluginConfig,
+    pub codex: CliPluginConfig,
+    pub gemini: CliPluginConfig,
+    #[serde(rename = "open-code")]
+    pub open_code: CliPluginConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliPluginConfig {
+    pub command: String,
+    pub args: Vec<String>,
+    pub persona: String,
+    pub role_weight: f32,
+}
+
+impl Default for CrucibleConfig {
+    fn default() -> Self {
+        Self {
+            crucible: CrucibleSection { version: "1".to_string() },
+            gate: GateConfig { enabled: true, untangle_bin: "untangle".to_string() },
+            context: ContextConfig {
+                reference_max_depth: 2,
+                reference_max_files: 30,
+                history_max_commits: 20,
+                history_max_days: 30,
+                docs_patterns: vec![
+                    "docs/**/*.md".to_string(),
+                    "README.md".to_string(),
+                    "ARCHITECTURE.md".to_string(),
+                ],
+                docs_max_bytes: 50_000,
+            },
+            coordinator: CoordinatorConfig {
+                max_rounds: 3,
+                quorum_threshold: 0.75,
+                agent_timeout_secs: 90,
+                devil_advocate: false,
+            },
+            verdict: VerdictConfig { block_on: "Critical".to_string() },
+            rate_limits: RateLimitConfig { anthropic_rpm: 50, google_rpm: 60, openai_rpm: 60 },
+            plugins: PluginsConfig {
+                agents: vec![
+                    "claude-code".to_string(),
+                    "codex".to_string(),
+                    "gemini".to_string(),
+                    "open-code".to_string(),
+                ],
+                judge: "claude-code".to_string(),
+                analyzer: "claude-code".to_string(),
+                paths: vec![],
+                claude_code: CliPluginConfig {
+                    command: "claude".to_string(),
+                    args: vec![],
+                    persona: "Security Auditor".to_string(),
+                    role_weight: 2.0,
+                },
+                codex: CliPluginConfig {
+                    command: "codex".to_string(),
+                    args: vec![],
+                    persona: "Architecture Lead".to_string(),
+                    role_weight: 1.5,
+                },
+                gemini: CliPluginConfig {
+                    command: "gemini".to_string(),
+                    args: vec![],
+                    persona: "Performance Optimizer".to_string(),
+                    role_weight: 1.5,
+                },
+                open_code: CliPluginConfig {
+                    command: "opencode".to_string(),
+                    args: vec![],
+                    persona: "Correctness Reviewer".to_string(),
+                    role_weight: 1.0,
+                },
+            },
+        }
+    }
+}
+
+impl CrucibleConfig {
+    pub fn load() -> Result<Self> {
+        let cwd = std::env::current_dir().context("get current dir")?;
+        if let Some(path) = find_config_path(&cwd) {
+            return load_from_path(&path);
+        }
+
+        let home = std::env::var("HOME").map_err(|_| anyhow!("HOME not set"))?;
+        let fallback = PathBuf::from(home).join(".config/crucible/config.toml");
+        if fallback.exists() {
+            return load_from_path(&fallback);
+        }
+
+        Ok(Self::default())
+    }
+}
+
+fn find_config_path(start: &Path) -> Option<PathBuf> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        let candidate = dir.join(".crucible.toml");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn load_from_path(path: &Path) -> Result<CrucibleConfig> {
+    let raw = fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
+    let expanded = expand_env(&raw)?;
+    let cfg: CrucibleConfig = toml::from_str(&expanded).context("parse config toml")?;
+    Ok(cfg)
+}
+
+fn expand_env(input: &str) -> Result<String> {
+    let re = regex::Regex::new(r"\$\{([A-Z0-9_]+)\}").expect("regex");
+    let mut missing = Vec::new();
+    let output = re.replace_all(input, |caps: &regex::Captures| {
+        let key = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        match std::env::var(key) {
+            Ok(val) => val,
+            Err(_) => {
+                missing.push(key.to_string());
+                String::new()
+            }
+        }
+    });
+
+    if !missing.is_empty() {
+        return Err(anyhow!("missing env vars in config: {}", missing.join(", ")));
+    }
+    Ok(output.to_string())
+}
+
+impl PluginsConfig {
+    pub fn resolve_role(&self, id: &str) -> Option<&CliPluginConfig> {
+        match id {
+            "claude-code" => Some(&self.claude_code),
+            "codex" => Some(&self.codex),
+            "gemini" => Some(&self.gemini),
+            "open-code" => Some(&self.open_code),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerdictWeights {
+    pub severity_weights: HashMap<String, f32>,
+}

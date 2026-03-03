@@ -1,0 +1,37 @@
+[workspace]
+members = [
+  "crates/libcrucible",
+  "crates/crucible-cli",
+  "crates/plugins/claude-code",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+git2 = "0.19"
+tree-sitter = "0.24"
+ratatui = "0.29"
+crossterm = "0.28"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+wiremock = "0.6"
+regex = "1"
+glob = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2"
+which = "6"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

@@ -1,0 +1,25 @@
+{ pkgs ? import <nixpkgs> {} }:
+let
+  src = pkgs.lib.cleanSource ./.;
+  rustPlatform = pkgs.makeRustPlatform {
+    cargo = pkgs.cargo;
+    rustc = pkgs.rustc;
+  };
+  openssl = pkgs.openssl;
+  libgit2 = pkgs.libgit2;
+  pkgconfig = pkgs.pkg-config;
+  cmake = pkgs.cmake;
+  buildInputs = [ openssl libgit2 ];
+  nativeBuildInputs = [ pkgconfig cmake ];
+  env = {
+    LIBGIT2_NO_VENDOR = "1";
+    OPENSSL_DIR = "${openssl.dev}";
+    OPENSSL_LIB_DIR = "${openssl.out}/lib";
+    OPENSSL_INCLUDE_DIR = "${openssl.dev}/include";
+  };
+  in rustPlatform.buildRustPackage ({
+    pname = "crucible";
+    version = "0.1.0";
+    inherit src buildInputs nativeBuildInputs;
+    cargoLock.lockFile = ./Cargo.lock;
+  } // env)

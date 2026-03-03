@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+if command -v crucible &>/dev/null; then
+  crucible review --hook
+fi
