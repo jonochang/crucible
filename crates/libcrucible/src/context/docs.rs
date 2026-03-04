@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use glob::glob;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocSnippet {
     pub path: PathBuf,
     pub contents: String,

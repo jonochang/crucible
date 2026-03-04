@@ -4,6 +4,7 @@ use crate::context::history::HistoryCollector;
 use crate::context::reference::ReferenceCollector;
 use anyhow::{Context, Result};
 use git2::{DiffFormat, DiffOptions, Repository};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::task;
 
@@ -22,7 +23,7 @@ pub struct ReviewContext {
     pub dep_graph: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatheredContext {
     pub references: Vec<reference::Reference>,
     pub history: Vec<history::CommitSummary>,
@@ -42,8 +43,9 @@ impl ReviewContext {
         let repo_root_clone = repo_root.clone();
         let diff_clone = diff.clone();
 
+        let refs_cfg = context_cfg.clone();
         let refs_task = task::spawn_blocking(move || {
-            ReferenceCollector::collect(&diff_clone, &repo_root_clone, &context_cfg)
+            ReferenceCollector::collect(&diff_clone, &repo_root_clone, &refs_cfg)
         });
 
         let history_cfg = context_cfg.clone();

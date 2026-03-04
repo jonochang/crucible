@@ -1,6 +1,7 @@
 use crate::config::ContextConfig;
 use anyhow::{Context, Result};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ pub struct Symbol {
     pub file: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reference {
     pub symbol: String,
     pub file: PathBuf,
@@ -43,8 +44,9 @@ impl ReferenceCollector {
 pub fn extract_symbols(diff: &str, repo_root: &Path) -> Result<Vec<Symbol>> {
     let file_ranges = parse_diff_ranges(diff);
     let mut parser = Parser::new();
+    let language = tree_sitter_rust::LANGUAGE;
     parser
-        .set_language(&tree_sitter_rust::language())
+        .set_language(&language.into())
         .context("set rust grammar")?;
 
     let mut symbols = Vec::new();

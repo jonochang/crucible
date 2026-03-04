@@ -1,9 +1,10 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use git2::{Repository, Sort};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitSummary {
     pub sha: String,
     pub message: String,

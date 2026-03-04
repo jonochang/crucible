@@ -6,7 +6,6 @@ use crate::report::{ConsensusMap, ConsensusStatus, Finding, FindingKey, LineSpan
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone)]
 pub struct Coordinator {
     registry: PluginRegistry,
     cfg: CrucibleConfig,
