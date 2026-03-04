@@ -12,7 +12,6 @@ let
   buildInputs = [ openssl libgit2 ];
   nativeBuildInputs = [ pkgconfig cmake ];
   env = {
-    LIBGIT2_NO_VENDOR = "1";
     OPENSSL_DIR = "${openssl.dev}";
     OPENSSL_LIB_DIR = "${openssl.out}/lib";
     OPENSSL_INCLUDE_DIR = "${openssl.dev}/include";
