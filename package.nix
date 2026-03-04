@@ -15,6 +15,7 @@ let
     OPENSSL_DIR = "${openssl.dev}";
     OPENSSL_LIB_DIR = "${openssl.out}/lib";
     OPENSSL_INCLUDE_DIR = "${openssl.dev}/include";
+    LIBGIT2_NO_VENDOR = "0";
   };
   in rustPlatform.buildRustPackage ({
     pname = "crucible";
