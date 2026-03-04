@@ -136,7 +136,7 @@ fn render_status(message: &str) -> Paragraph<'_> {
         .wrap(Wrap { trim: true })
 }
 
-fn render_review(report: Option<&ReviewReport>, status: Option<&str>) -> Paragraph<'_> {
+fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) -> Paragraph<'a> {
     let mut lines = Vec::new();
     if let Some(report) = report {
         for f in &report.findings {
