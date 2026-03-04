@@ -6,6 +6,7 @@ use crate::plugin::{AgentPlugin, FocusAnalyzer};
 use crate::report::{AutoFix, Finding, RawFinding, Severity, Confidence};
 use serde::Deserialize;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone)]
 pub struct CliAgentPlugin {
@@ -13,6 +14,12 @@ pub struct CliAgentPlugin {
     persona: String,
     command: String,
     args: Vec<String>,
+}
+
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_verbose(enabled: bool) {
+    VERBOSE.store(enabled, Ordering::Relaxed);
 }
 
 impl CliAgentPlugin {
@@ -26,18 +33,49 @@ impl CliAgentPlugin {
     }
 
     fn run_cli<T: for<'de> Deserialize<'de>>(&self, system: String, user: String) -> Result<T> {
-        let prompt = format!("[SYSTEM]\n{}\n\n[USER]\n{}\n", system, user);
-        let mut child = Command::new(&self.command)
-            .args(&self.args)
-            .stdin(Stdio::piped())
+        let is_claude = self.command == "claude";
+        let is_gemini = self.command == "gemini";
+        let prompt = if is_claude {
+            user
+        } else if is_gemini {
+            format!("System: {}\n\nuser: {}", system, user)
+        } else {
+            format!("[SYSTEM]\n{}\n\n[USER]\n{}\n", system, user)
+        };
+
+        let mut cmd = Command::new(&self.command);
+        cmd.args(&self.args);
+        if is_claude {
+            if !self.args.iter().any(|a| a == "-p" || a == "--print") {
+                cmd.arg("-p");
+            }
+            if !self.args.iter().any(|a| a == "--output-format") {
+                cmd.args(["--output-format", "json"]);
+            }
+            cmd.args(["--system-prompt", &system]);
+        }
+        if is_gemini {
+            if !self.args.iter().any(|a| a == "-y" || a == "--yes") {
+                cmd.arg("-y");
+            }
+            if !self.args.iter().any(|a| a == "-o" || a == "--output") {
+                cmd.args(["-o", "json"]);
+            }
+            cmd.arg(&prompt);
+        }
+
+        let mut child = cmd
+            .stdin(if is_gemini { Stdio::null() } else { Stdio::piped() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("spawn {}", self.command))?;
 
-        if let Some(stdin) = child.stdin.as_mut() {
-            use std::io::Write;
-            stdin.write_all(prompt.as_bytes()).context("write prompt")?;
+        if !is_gemini {
+            if let Some(stdin) = child.stdin.as_mut() {
+                use std::io::Write;
+                stdin.write_all(prompt.as_bytes()).context("write prompt")?;
+            }
         }
 
         let output = child.wait_with_output().context("wait for CLI output")?;
@@ -50,7 +88,58 @@ impl CliAgentPlugin {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let parsed: T = serde_json::from_str(&stdout).context("parse JSON from CLI")?;
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if is_verbose() {
+            eprintln!(
+                "crucible: {} raw stdout:\n{}",
+                self.command,
+                sanitize_terminal_output(&stdout)
+            );
+            if !stderr.trim().is_empty() {
+                eprintln!(
+                    "crucible: {} raw stderr:\n{}",
+                    self.command,
+                    sanitize_terminal_output(&stderr)
+                );
+            }
+        }
+        let parsed: T = match serde_json::from_str(&stdout) {
+            Ok(val) => val,
+            Err(err) => {
+                if is_claude {
+                    if let Some(parsed) = parse_claude_envelope(&stdout) {
+                        if is_verbose() {
+                            eprintln!("crucible: {} parsed JSON from Claude envelope", self.command);
+                        }
+                        return Ok(parsed);
+                    }
+                }
+                if is_gemini {
+                    if let Some(parsed) = parse_gemini_envelope(&stdout) {
+                        if is_verbose() {
+                            eprintln!("crucible: {} parsed JSON from Gemini envelope", self.command);
+                        }
+                        return Ok(parsed);
+                    }
+                }
+                if let Some(parsed) = parse_json_from_mixed(&stdout) {
+                    if is_verbose() {
+                        eprintln!("crucible: {} parsed JSON from mixed output", self.command);
+                    } else {
+                        eprintln!(
+                            "crucible warning: {} returned mixed output; parsed JSON fallback was used (rerun with --verbose to inspect raw output)",
+                            self.command
+                        );
+                    }
+                    parsed
+                } else {
+                    let snippet = truncate(&stdout, 2000);
+                    return Err(anyhow!(
+                        "parse JSON from CLI failed: {err}\nstdout (truncated):\n{snippet}\nrun with --verbose to include raw stderr"
+                    ));
+                }
+            }
+        };
         Ok(parsed)
     }
 
@@ -64,6 +153,130 @@ impl CliAgentPlugin {
         let history = serde_json::to_string(&ctx.gathered.history).unwrap_or_default();
         (focus, references, history)
     }
+}
+
+fn is_verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
+
+fn parse_json_from_mixed<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T> {
+    let mut last: Option<T> = None;
+    for (idx, ch) in input.char_indices() {
+        if ch != '{' {
+            continue;
+        }
+        let slice = &input[idx..];
+        let mut de = serde_json::Deserializer::from_str(slice);
+        let value = match serde_json::Value::deserialize(&mut de) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if !value.is_object() {
+            continue;
+        }
+        let parsed = match serde_json::from_value(value) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        last = Some(parsed);
+    }
+    last
+}
+
+fn truncate(input: &str, max: usize) -> String {
+    if input.chars().count() <= max {
+        return input.to_string();
+    }
+    let mut s = String::new();
+    for (i, ch) in input.chars().enumerate() {
+        if i >= max {
+            break;
+        }
+        s.push(ch);
+    }
+    s.push_str("\n…");
+    s
+}
+
+fn parse_claude_envelope<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T> {
+    let value: serde_json::Value = serde_json::from_str(input).ok()?;
+    if let Some(structured) = value.get("structured_output") {
+        return serde_json::from_value(structured.clone()).ok();
+    }
+    if let Some(result) = value.get("result").and_then(|r| r.as_str()) {
+        if !result.trim().is_empty() {
+            let candidate = strip_fenced_json(result);
+            return serde_json::from_str(candidate.as_str()).ok();
+        }
+    }
+    None
+}
+
+fn parse_gemini_envelope<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T> {
+    let value: serde_json::Value = serde_json::from_str(input).ok()?;
+    let response = value.get("response")?;
+    match response {
+        serde_json::Value::String(text) => {
+            let candidate = strip_fenced_json(text);
+            serde_json::from_str::<T>(&candidate)
+                .ok()
+                .or_else(|| parse_json_from_mixed(&candidate))
+        }
+        serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+            serde_json::from_value(response.clone()).ok()
+        }
+        _ => None,
+    }
+}
+
+fn strip_fenced_json(input: &str) -> String {
+    let trimmed = input.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        let mut lines = rest.lines();
+        let _lang = lines.next().unwrap_or("");
+        let mut body = lines.collect::<Vec<_>>().join("\n");
+        if let Some(stripped) = body.rfind("```") {
+            body.truncate(stripped);
+        }
+        return body.trim().to_string();
+    }
+    trimmed.to_string()
+}
+
+fn sanitize_terminal_output(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if let Some('[') = chars.peek().copied() {
+                chars.next();
+                while let Some(next) = chars.next() {
+                    if matches!(next, 'A'..='Z' | 'a'..='z') {
+                        break;
+                    }
+                }
+                continue;
+            }
+            if let Some(']') = chars.peek().copied() {
+                chars.next();
+                while let Some(next) = chars.next() {
+                    if next == '\u{07}' {
+                        break;
+                    }
+                    if next == '\u{1b}' {
+                        if let Some('\\') = chars.peek().copied() {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 #[async_trait]

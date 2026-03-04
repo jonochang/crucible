@@ -115,19 +115,24 @@ impl Default for CrucibleConfig {
                 paths: vec![],
                 claude_code: CliPluginConfig {
                     command: "claude".to_string(),
-                    args: vec![],
+                    args: vec!["-p".to_string(), "--output-format".to_string(), "json".to_string()],
                     persona: "Security Auditor".to_string(),
                     role_weight: 2.0,
                 },
                 codex: CliPluginConfig {
                     command: "codex".to_string(),
-                    args: vec![],
+                    args: vec![
+                        "exec".to_string(),
+                        "-".to_string(),
+                        "--color".to_string(),
+                        "never".to_string(),
+                    ],
                     persona: "Architecture Lead".to_string(),
                     role_weight: 1.5,
                 },
                 gemini: CliPluginConfig {
                     command: "gemini".to_string(),
-                    args: vec![],
+                    args: vec!["-y".to_string(), "-o".to_string(), "json".to_string()],
                     persona: "Performance Optimizer".to_string(),
                     role_weight: 1.5,
                 },

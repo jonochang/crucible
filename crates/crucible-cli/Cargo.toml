@@ -17,3 +17,14 @@ which.workspace = true
 git2.workspace = true
 
 libcrucible = { path = "../libcrucible" }
+
+[[test]]
+name = "bdd"
+path = "tests/bdd.rs"
+harness = false
+
+[dev-dependencies]
+cucumber.workspace = true
+assert_cmd.workspace = true
+futures.workspace = true
+tempfile.workspace = true

@@ -10,9 +10,14 @@ pub struct ReviewArgs {
     pub hook: bool,
     #[arg(long)]
     pub json: bool,
+    #[arg(long, help = "Enable verbose CLI agent logging")]
+    pub verbose: bool,
 }
 
 pub async fn run(args: ReviewArgs) -> Result<()> {
+    if args.verbose {
+        libcrucible::plugins::set_verbose(true);
+    }
     let cfg = CrucibleConfig::load()?;
     if args.json {
         let report = libcrucible::run_review(&cfg).await?;
