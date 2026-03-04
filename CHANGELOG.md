@@ -8,6 +8,11 @@ All notable changes to this project will be documented in this file.
 - Added a comprehensive README with usage, configuration, and CLI agent contract.
 - Generated `Cargo.lock` for reproducible builds.
 
+## 0.1.2 - 2026-03-05
+
+- Added Cucumber BDD scenarios with mock agents and opt-in real agent runs.
+- Aligned Gemini CLI invocation and parsing with CLI-based workflows.
+
 ## 0.1.0 - 2026-03-03
 
 - Initial MVP release.
