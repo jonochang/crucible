@@ -17,6 +17,11 @@
           extensions = [ "clippy" "rustfmt" "rust-src" ];
         };
       in {
+        packages.default = pkgs.callPackage ./package.nix { };
+        apps.default = flake-utils.lib.mkApp {
+          drv = pkgs.callPackage ./package.nix { };
+        };
+
         devShells.default = pkgs.mkShell {
           buildInputs = [
             rustToolchain
