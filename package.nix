@@ -19,7 +19,7 @@ let
   };
   in rustPlatform.buildRustPackage ({
     pname = "crucible";
-    version = "0.1.0";
+    version = "0.1.1";
     inherit src buildInputs nativeBuildInputs;
     cargoLock.lockFile = ./Cargo.lock;
   } // env)
