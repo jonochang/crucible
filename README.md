@@ -34,6 +34,7 @@ crucible hook install
 - Rust toolchain (or `nix develop`)
 - Git repository (Crucible reviews the working tree diff vs `HEAD`)
 - Agent CLIs on `PATH`: `claude`, `codex`, `gemini`, `opencode`
+- `just` on `PATH` (for the managed pre-push hook workflow)
 
 Crucible talks to these tools via stdin/stdout. Each CLI must return strict JSON as documented below.
 
@@ -185,7 +186,9 @@ crucible hook status
 ```
 
 Behavior:
-- `install` writes `.git/hooks/pre-push`. If the hook exists and is not managed by Crucible, use `--force` to overwrite.
+- `install` writes `.git/hooks/pre-push` that runs `just crucible-pre-push`.
+- `crucible-pre-push` skips if no local diff, otherwise runs `crucible review --hook --reviewer claude-code --max-rounds 1`.
+- If the hook exists and is not managed by Crucible, use `--force` to overwrite.
 - `uninstall` only removes hooks managed by Crucible.
 - `status` prints whether the hook is installed and whether `crucible` is on `PATH`.
 

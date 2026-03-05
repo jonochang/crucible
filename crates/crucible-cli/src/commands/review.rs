@@ -24,13 +24,29 @@ pub struct ReviewArgs {
     pub verbose: bool,
     #[arg(long, help = "Keep TUI open after completion; default is auto-exit")]
     pub interactive: bool,
+    #[arg(long, help = "Run review with a single reviewer id (e.g. claude-code)")]
+    pub reviewer: Option<String>,
+    #[arg(long, help = "Override maximum review rounds")]
+    pub max_rounds: Option<u8>,
 }
 
 pub async fn run(args: ReviewArgs) -> Result<()> {
     if args.verbose {
         libcrucible::plugins::set_verbose(true);
     }
-    let cfg = CrucibleConfig::load()?;
+    let mut cfg = CrucibleConfig::load()?;
+    if let Some(reviewer) = &args.reviewer {
+        cfg.plugins.agents = vec![reviewer.clone()];
+        cfg.plugins.analyzer = reviewer.clone();
+        cfg.plugins.judge = reviewer.clone();
+        if args.max_rounds.is_none() {
+            cfg.coordinator.max_rounds = 1;
+            cfg.coordinator.quorum_threshold = 1.0;
+        }
+    }
+    if let Some(rounds) = args.max_rounds {
+        cfg.coordinator.max_rounds = rounds.max(1);
+    }
     let use_tui = !args.hook && args.export_issues.is_none() && std::io::stdout().is_terminal();
     if use_tui {
         let exit_code = crate::tui::run_review_tui(&cfg, args.interactive).await?;

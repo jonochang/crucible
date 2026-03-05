@@ -41,7 +41,7 @@ fn install(force: bool) -> Result<()> {
     }
 
     let contents = format!(
-        "#!/usr/bin/env bash\n{}\nset -euo pipefail\nexec crucible review --hook\n",
+        "#!/usr/bin/env bash\n{}\nset -euo pipefail\nexec just crucible-pre-push\n",
         HEADER
     );
     fs::write(&hook_path, contents).context("write pre-push hook")?;
