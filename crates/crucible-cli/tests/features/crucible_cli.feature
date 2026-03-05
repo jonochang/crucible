@@ -21,6 +21,11 @@ Feature: Crucible CLI
     And a mock crucible config
     When I run review
     Then progress output is emitted
+    And startup header is shown
+    And round status output includes durations
+    And analysis section is shown
+    And system context section is shown
+    And convergence output is shown
 
   Scenario: Review exports issues with locations
     Given a git repo with a diff
@@ -33,6 +38,12 @@ Feature: Crucible CLI
     And a slow mock crucible config
     When I interrupt review
     Then the review exits with code 130
+
+  Scenario: Review exits after completion by default
+    Given a git repo with a diff
+    And a mock crucible config
+    When I run review
+    Then the review process completes successfully
 
   @real-agents
   Scenario: Run review with real agents

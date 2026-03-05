@@ -1,16 +1,18 @@
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use libcrucible::config::CrucibleConfig;
-use libcrucible::progress::ProgressEvent;
+use libcrucible::progress::{ConvergenceVerdict, ProgressEvent, ReviewerState};
 use libcrucible::report::{ReviewReport, Verdict};
+use ratatui::Terminal;
 use ratatui::layout::Alignment;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Terminal;
-use std::io::{stdout, Write};
+use std::io::{Write, stdout};
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 use tokio::sync::mpsc;
@@ -33,9 +35,15 @@ enum AgentStatus {
 
 #[derive(Debug, Default, Clone)]
 struct ProgressState {
+    phase: Option<String>,
     analyzer_done: bool,
     round: Option<u8>,
     total_rounds: u8,
+    run_header: Option<String>,
+    analysis: Option<String>,
+    system_context: Option<String>,
+    convergence: Option<String>,
+    parallel_status: Option<String>,
     agents: Vec<String>,
     statuses: std::collections::HashMap<String, AgentStatus>,
     reviews: std::collections::HashMap<String, AgentReviewState>,
@@ -47,7 +55,7 @@ struct AgentReviewState {
     highlights: Vec<String>,
 }
 
-pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
+pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i32> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout());
@@ -69,9 +77,38 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
     loop {
         while let Ok(event) = rx.try_recv() {
             match &event {
+                ProgressEvent::RunHeader {
+                    reviewers,
+                    max_rounds,
+                    changed_lines,
+                    ..
+                } => {
+                    progress.run_header = Some(format!(
+                        "Reviewers: {} | Max rounds: {} | Changed lines: {}",
+                        reviewers.join(", "),
+                        max_rounds,
+                        changed_lines
+                    ));
+                }
+                ProgressEvent::PhaseStart { phase } => {
+                    progress.phase = Some(format!("{} (running)", phase))
+                }
+                ProgressEvent::PhaseDone { phase } => {
+                    progress.phase = Some(format!("{} (done)", phase))
+                }
                 ProgressEvent::AnalyzerStart => screen = Screen::Analyzing,
                 ProgressEvent::AnalyzerDone => progress.analyzer_done = true,
-                ProgressEvent::RoundStart { round, total_rounds, agents } => {
+                ProgressEvent::AnalysisReady { markdown } => {
+                    progress.analysis = Some(markdown.clone())
+                }
+                ProgressEvent::SystemContextReady { markdown } => {
+                    progress.system_context = Some(markdown.clone())
+                }
+                ProgressEvent::RoundStart {
+                    round,
+                    total_rounds,
+                    agents,
+                } => {
                     screen = Screen::Reviewing;
                     progress.round = Some(*round);
                     progress.total_rounds = *total_rounds;
@@ -81,6 +118,18 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                         .cloned()
                         .map(|id| (id, AgentStatus::Queued))
                         .collect();
+                }
+                ProgressEvent::ParallelStatus { statuses, .. } => {
+                    progress.parallel_status = Some(format_parallel_status(statuses));
+                    for status in statuses {
+                        let mapped = match status.state {
+                            ReviewerState::Queued => AgentStatus::Queued,
+                            ReviewerState::Running => AgentStatus::Running,
+                            ReviewerState::Done => AgentStatus::Done,
+                            ReviewerState::Error => AgentStatus::Error,
+                        };
+                        progress.statuses.insert(status.id.clone(), mapped);
+                    }
                 }
                 ProgressEvent::AgentStart { id, .. } => {
                     progress.statuses.insert(id.clone(), AgentStatus::Running);
@@ -108,38 +157,35 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                 ProgressEvent::AgentError { id, .. } => {
                     progress.statuses.insert(id.clone(), AgentStatus::Error);
                 }
-                ProgressEvent::RoundDone { .. } => {}
+                ProgressEvent::ConvergenceJudgment {
+                    round,
+                    verdict,
+                    rationale,
+                } => {
+                    progress.convergence = Some(format!(
+                        "Round {} convergence: {} - {}",
+                        round,
+                        format_convergence(*verdict),
+                        rationale
+                    ));
+                }
+                ProgressEvent::RoundComplete {
+                    round,
+                    total_rounds,
+                } => {
+                    status_line = Some(format!("Round {}/{} complete", round, total_rounds));
+                }
                 ProgressEvent::Completed(rep) => {
                     let json = serde_json::to_string_pretty(rep).unwrap_or_default();
                     write_log_json(&mut log, &json);
-                    if status_line.is_none() {
-                        let critical = rep
-                            .findings
-                            .iter()
-                            .filter(|f| matches!(f.severity, libcrucible::report::Severity::Critical))
-                            .count();
-                        let warning = rep
-                            .findings
-                            .iter()
-                            .filter(|f| matches!(f.severity, libcrucible::report::Severity::Warning))
-                            .count();
-                        let info = rep
-                            .findings
-                            .iter()
-                            .filter(|f| matches!(f.severity, libcrucible::report::Severity::Info))
-                            .count();
-                        let total = progress.total_rounds.max(1);
-                        status_line = Some(format!(
-                            "Round {} complete — {} findings ({} Critical, {} Warning, {} Info)",
-                            total,
-                            rep.findings.len(),
-                            critical,
-                            warning,
-                            info
-                        ));
-                    }
                     report = Some(rep.clone());
                     screen = Screen::Review;
+                    if !interactive {
+                        exit_code = Some(match rep.verdict {
+                            Verdict::Block => 1,
+                            _ => 0,
+                        });
+                    }
                 }
                 ProgressEvent::Canceled => {}
                 _ => {}
@@ -154,7 +200,7 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
             f.render_widget(block, size);
 
             let content = match screen {
-                Screen::Analyzing => render_status("Analyzing diff…"),
+                Screen::Analyzing => render_status("Analyzing diff..."),
                 Screen::Reviewing => render_reviewing(&progress),
                 Screen::Review => render_review(report.as_ref(), status_line.as_deref()),
                 Screen::DiffView => render_diff(report.as_ref(), diff_scroll),
@@ -174,7 +220,9 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                                     if let Some(fix) = &rep.auto_fix {
                                         match apply_patch(&fix.unified_diff) {
                                             Ok(_) => break,
-                                            Err(err) => status_line = Some(format!("Patch failed: {err}")),
+                                            Err(err) => {
+                                                status_line = Some(format!("Patch failed: {err}"))
+                                            }
                                         }
                                     }
                                 }
@@ -182,7 +230,9 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                             _ => {}
                         },
                         Screen::DiffView => match key.code {
-                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => screen = Screen::Review,
+                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                                screen = Screen::Review
+                            }
                             KeyCode::Down => diff_scroll = diff_scroll.saturating_add(1),
                             KeyCode::Up => diff_scroll = diff_scroll.saturating_sub(1),
                             _ => {}
@@ -203,14 +253,12 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
             }
         }
 
-        if last_tick.elapsed() > Duration::from_millis(250) {
-            last_tick = Instant::now();
+        if exit_code.is_some() {
+            break;
         }
 
-        if let Some(rep) = &report {
-            if matches!(rep.verdict, Verdict::Block) && screen == Screen::Review {
-                // keep showing until user quits
-            }
+        if last_tick.elapsed() > Duration::from_millis(250) {
+            last_tick = Instant::now();
         }
     }
 
@@ -230,11 +278,11 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
         }
     };
 
-    let exit_code = match report.verdict {
+    let code = match report.verdict {
         Verdict::Block => 1,
         _ => 0,
     };
-    Ok(exit_code)
+    Ok(code)
 }
 
 fn render_status(message: &str) -> Paragraph<'_> {
@@ -266,7 +314,9 @@ fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) 
         if report.auto_fix.is_some() {
             lines.push(Line::from(""));
             lines.push(Line::from("Auto-fix ready."));
-            lines.push(Line::from("[Enter] Apply patch    [D] View diff    [Q] Skip"));
+            lines.push(Line::from(
+                "[Enter] Apply patch    [D] View diff    [Q] Skip",
+            ));
         } else {
             lines.push(Line::from(""));
             lines.push(Line::from("[Q] Quit"));
@@ -285,20 +335,69 @@ fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) 
 
 fn open_review_log() -> Result<std::fs::File> {
     let path = std::env::current_dir()?.join("review_report.log");
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     Ok(file)
 }
 
 fn write_log_event(log: &mut std::fs::File, event: &ProgressEvent) {
     match event {
+        ProgressEvent::RunHeader {
+            reviewers,
+            max_rounds,
+            changed_files,
+            changed_lines,
+            convergence_enabled,
+            context_enabled,
+        } => {
+            let _ = writeln!(
+                log,
+                "[progress] run:header reviewers={} max_rounds={} changed_files={} changed_lines={} convergence_enabled={} context_enabled={}",
+                reviewers.join(","),
+                max_rounds,
+                changed_files,
+                changed_lines,
+                convergence_enabled,
+                context_enabled
+            );
+        }
+        ProgressEvent::PhaseStart { phase } => {
+            let _ = writeln!(log, "[progress] phase:start {}", phase);
+        }
+        ProgressEvent::PhaseDone { phase } => {
+            let _ = writeln!(log, "[progress] phase:done {}", phase);
+        }
         ProgressEvent::AnalyzerStart => {
             let _ = writeln!(log, "[progress] analyzer:start");
         }
         ProgressEvent::AnalyzerDone => {
             let _ = writeln!(log, "[progress] analyzer:done");
         }
+        ProgressEvent::AnalysisReady { markdown } => {
+            let _ = writeln!(log, "[analysis]");
+            let _ = writeln!(log, "{}", markdown);
+        }
+        ProgressEvent::SystemContextReady { markdown } => {
+            let _ = writeln!(log, "[system-context]");
+            let _ = writeln!(log, "{}", markdown);
+        }
         ProgressEvent::RoundStart { round, agents, .. } => {
-            let _ = writeln!(log, "[progress] round:{} start (agents: {})", round, agents.join(","));
+            let _ = writeln!(
+                log,
+                "[progress] round:{} start (agents: {})",
+                round,
+                agents.join(",")
+            );
+        }
+        ProgressEvent::ParallelStatus { round, statuses } => {
+            let _ = writeln!(
+                log,
+                "[progress] round:{} status {}",
+                round,
+                format_parallel_status(statuses)
+            );
         }
         ProgressEvent::AgentStart { round, id } => {
             let _ = writeln!(log, "[progress] agent:start round={} id={}", round, id);
@@ -311,17 +410,44 @@ fn write_log_event(log: &mut std::fs::File, event: &ProgressEvent) {
         } => {
             let _ = writeln!(log, "[agent-review] round={} id={} {}", round, id, summary);
             for h in highlights {
-                let _ = writeln!(log, "[agent-review]   [{}] {} {}", h.severity, h.location, h.message);
+                let _ = writeln!(
+                    log,
+                    "[agent-review]   [{}] {} {}",
+                    h.severity, h.location, h.message
+                );
             }
         }
         ProgressEvent::AgentDone { round, id } => {
             let _ = writeln!(log, "[progress] agent:done round={} id={}", round, id);
         }
         ProgressEvent::AgentError { round, id, message } => {
-            let _ = writeln!(log, "[progress] agent:error round={} id={} msg={}", round, id, message);
+            let _ = writeln!(
+                log,
+                "[progress] agent:error round={} id={} msg={}",
+                round, id, message
+            );
         }
         ProgressEvent::RoundDone { round } => {
             let _ = writeln!(log, "[progress] round:{} done", round);
+        }
+        ProgressEvent::ConvergenceJudgment {
+            round,
+            verdict,
+            rationale,
+        } => {
+            let _ = writeln!(
+                log,
+                "[progress] convergence round={} verdict={} rationale={}",
+                round,
+                format_convergence(*verdict),
+                rationale
+            );
+        }
+        ProgressEvent::RoundComplete {
+            round,
+            total_rounds,
+        } => {
+            let _ = writeln!(log, "[progress] round:{}/{} complete", round, total_rounds);
         }
         ProgressEvent::AutoFixReady => {
             let _ = writeln!(log, "[progress] autofix:ready");
@@ -342,12 +468,47 @@ fn write_log_json(log: &mut std::fs::File, json: &str) {
 
 fn render_reviewing<'a>(progress: &'a ProgressState) -> Paragraph<'a> {
     let mut lines = Vec::new();
+    if let Some(run_header) = &progress.run_header {
+        lines.push(Line::from(run_header.clone()));
+    }
+    if let Some(phase) = &progress.phase {
+        lines.push(Line::from(format!("Phase: {}", phase)));
+    }
     let round = progress.round.unwrap_or(1);
     let total = progress.total_rounds.max(1);
-    let analyzer = if progress.analyzer_done { "done" } else { "running" };
-    lines.push(Line::from(format!("Round {}/{}  (Analyzer: {})", round, total, analyzer)));
+    let analyzer = if progress.analyzer_done {
+        "done"
+    } else {
+        "running"
+    };
+    lines.push(Line::from(format!(
+        "Round {}/{}  (Analyzer: {})",
+        round, total, analyzer
+    )));
+    if let Some(status) = &progress.parallel_status {
+        lines.push(Line::from(status.clone()));
+    }
+    if let Some(analysis) = &progress.analysis {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Analysis:"));
+        lines.push(Line::from(truncate_line(analysis, 180)));
+    }
+    if let Some(system_context) = &progress.system_context {
+        lines.push(Line::from(""));
+        lines.push(Line::from("System Context:"));
+        lines.push(Line::from(truncate_line(system_context, 180)));
+    }
+    if let Some(convergence) = &progress.convergence {
+        lines.push(Line::from(""));
+        lines.push(Line::from(convergence.clone()));
+    }
     for id in &progress.agents {
-        let status = match progress.statuses.get(id).copied().unwrap_or(AgentStatus::Queued) {
+        let status = match progress
+            .statuses
+            .get(id)
+            .copied()
+            .unwrap_or(AgentStatus::Queued)
+        {
             AgentStatus::Queued => "queued",
             AgentStatus::Running => "running",
             AgentStatus::Done => "done",
@@ -370,7 +531,11 @@ fn render_diff(report: Option<&ReviewReport>, scroll: u16) -> Paragraph<'_> {
         .map(|a| a.unified_diff.as_str())
         .unwrap_or("No diff available");
     Paragraph::new(Text::from(diff.to_string()))
-        .block(Block::default().borders(Borders::ALL).title("Auto-fix Diff"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Auto-fix Diff"),
+        )
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false })
 }
@@ -387,4 +552,45 @@ fn apply_patch(diff: &str) -> Result<()> {
         return Err(anyhow::anyhow!("git apply failed"));
     }
     Ok(())
+}
+
+fn format_parallel_status(statuses: &[libcrucible::progress::ReviewerStatus]) -> String {
+    let mut parts = Vec::with_capacity(statuses.len());
+    for status in statuses {
+        let marker = match status.state {
+            ReviewerState::Queued => "...",
+            ReviewerState::Running => "RUN",
+            ReviewerState::Done => "OK",
+            ReviewerState::Error => "ERR",
+        };
+        let part = match status.duration_secs {
+            Some(secs) => format!("{marker} {} ({secs:.1}s)", status.id),
+            None => format!("{marker} {}", status.id),
+        };
+        parts.push(part);
+    }
+    format!("[{}]", parts.join(" | "))
+}
+
+fn format_convergence(verdict: ConvergenceVerdict) -> &'static str {
+    match verdict {
+        ConvergenceVerdict::Converged => "CONVERGED",
+        ConvergenceVerdict::NotConverged => "NOT_CONVERGED",
+    }
+}
+
+fn truncate_line(input: &str, max: usize) -> String {
+    let one_line = input.replace('\n', " ");
+    if one_line.chars().count() <= max {
+        return one_line;
+    }
+    let mut out = String::new();
+    for (idx, ch) in one_line.chars().enumerate() {
+        if idx >= max {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push_str("...");
+    out
 }

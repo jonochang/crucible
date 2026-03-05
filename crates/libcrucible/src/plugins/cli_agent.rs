@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Context, Result};
-use async_trait::async_trait;
 use crate::analysis::{AgentContext, FocusAreas};
 use crate::config::CliPluginConfig;
-use crate::plugin::{AgentPlugin, FocusAnalyzer};
-use crate::report::{AutoFix, Finding, RawFinding, Severity, Confidence};
+use crate::plugin::{AgentPlugin, AgentReviewOutput, FocusAnalyzer};
+use crate::report::{AutoFix, Confidence, Finding, RawFinding, Severity};
+use anyhow::{Context, Result, anyhow};
+use async_trait::async_trait;
 use serde::Deserialize;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,7 +65,11 @@ impl CliAgentPlugin {
         }
 
         let mut child = cmd
-            .stdin(if is_gemini { Stdio::null() } else { Stdio::piped() })
+            .stdin(if is_gemini {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -109,7 +113,10 @@ impl CliAgentPlugin {
                 if is_claude {
                     if let Some(parsed) = parse_claude_envelope(&stdout) {
                         if is_verbose() {
-                            eprintln!("crucible: {} parsed JSON from Claude envelope", self.command);
+                            eprintln!(
+                                "crucible: {} parsed JSON from Claude envelope",
+                                self.command
+                            );
                         }
                         return Ok(parsed);
                     }
@@ -117,7 +124,10 @@ impl CliAgentPlugin {
                 if is_gemini {
                     if let Some(parsed) = parse_gemini_envelope(&stdout) {
                         if is_verbose() {
-                            eprintln!("crucible: {} parsed JSON from Gemini envelope", self.command);
+                            eprintln!(
+                                "crucible: {} parsed JSON from Gemini envelope",
+                                self.command
+                            );
                         }
                         return Ok(parsed);
                     }
@@ -152,6 +162,43 @@ impl CliAgentPlugin {
         let references = serde_json::to_string(&ctx.gathered.references).unwrap_or_default();
         let history = serde_json::to_string(&ctx.gathered.history).unwrap_or_default();
         (focus, references, history)
+    }
+
+    fn review_prompt_round1(&self, ctx: &AgentContext) -> (String, String) {
+        let (focus, references, history) = self.build_context_sections(ctx);
+        let system = format!(
+            "You are a {} performing an exhaustive round-1 code review.\n\
+            You MUST review all changed files/functions and assess correctness, security, performance, error handling, edge cases, and maintainability.\n\
+            Respond ONLY with valid JSON matching this schema:\n\
+            {{\n  \"narrative\": \"<concise analysis for terminal display>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"message\": \"<concise actionable issue>\",\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
+            self.persona
+        );
+        let user = format!(
+            "Round: 1\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n\nDiff to review:\n{}",
+            focus, references, history, ctx.diff
+        );
+        (system, user)
+    }
+
+    fn review_prompt_round_n(
+        &self,
+        ctx: &AgentContext,
+        round: u8,
+        synthesis: &crate::coordinator::CrossPollinationSynthesis,
+    ) -> (String, String) {
+        let (focus, references, history) = self.build_context_sections(ctx);
+        let system = format!(
+            "You are a {} performing adversarial round-{} review.\n\
+            You MUST use only prior-round discussion below (no same-round leakage), explicitly agree/disagree with prior points, and call out missed issues if any.\n\
+            Respond ONLY with valid JSON matching this schema:\n\
+            {{\n  \"narrative\": \"<concise agreement/disagreement summary>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"message\": \"<concise actionable issue>\",\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
+            self.persona, round
+        );
+        let user = format!(
+            "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n\nDiff to review:\n{}",
+            round, synthesis.summary, focus, references, history, ctx.diff
+        );
+        (system, user)
     }
 }
 
@@ -289,29 +336,27 @@ impl AgentPlugin for CliAgentPlugin {
         &self.persona
     }
 
-    async fn analyze(&self, ctx: &AgentContext) -> Result<Vec<RawFinding>> {
-        let (focus, references, history) = self.build_context_sections(ctx);
-        let system = format!(
-            "You are a {} performing a structured code review.\n\nIMPORTANT: Respond ONLY with a valid JSON object matching this schema.\nDo not include any text outside the JSON object.\n\n{{\n  \"findings\": [\n    {{\n      \"severity\":   \"Critical | Warning | Info\",\n      \"file\":       \"<relative path or null>\",\n      \"line_start\": <integer or null>,\n      \"line_end\":   <integer or null>,\n      \"message\":    \"<concise, actionable description>\",\n      \"confidence\": \"High | Medium | Low\"\n    }}\n  ]\n}}\n",
-            self.persona
-        );
-
-        let user = format!(
-            "Review context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n\nDiff to review:\n{}",
-            focus, references, history, ctx.diff
-        );
-
+    async fn analyze(&self, ctx: &AgentContext) -> Result<AgentReviewOutput> {
+        let (system, user) = self.review_prompt_round1(ctx);
         let resp: FindingsResponse = self.run_cli(system, user)?;
-        Ok(resp.findings.into_iter().map(|f| f.into()).collect())
+        Ok(AgentReviewOutput {
+            findings: resp.findings.into_iter().map(|f| f.into()).collect(),
+            narrative: resp.narrative.unwrap_or_default(),
+        })
     }
 
     async fn debate(
         &self,
-        _ctx: &AgentContext,
-        _round: u8,
-        _synthesis: &crate::coordinator::CrossPollinationSynthesis,
-    ) -> Result<Vec<RawFinding>> {
-        Ok(Vec::new())
+        ctx: &AgentContext,
+        round: u8,
+        synthesis: &crate::coordinator::CrossPollinationSynthesis,
+    ) -> Result<AgentReviewOutput> {
+        let (system, user) = self.review_prompt_round_n(ctx, round, synthesis);
+        let resp: FindingsResponse = self.run_cli(system, user)?;
+        Ok(AgentReviewOutput {
+            findings: resp.findings.into_iter().map(|f| f.into()).collect(),
+            narrative: resp.narrative.unwrap_or_default(),
+        })
     }
 
     async fn summarize(&self, ctx: &AgentContext, findings: &[Finding]) -> Result<AutoFix> {
@@ -322,14 +367,17 @@ impl AgentPlugin for CliAgentPlugin {
             ctx.diff
         );
         let resp: AutoFixResponse = self.run_cli(system, user)?;
-        Ok(AutoFix { unified_diff: resp.unified_diff, explanation: resp.explanation })
+        Ok(AutoFix {
+            unified_diff: resp.unified_diff,
+            explanation: resp.explanation,
+        })
     }
 }
 
 #[async_trait]
 impl FocusAnalyzer for CliAgentPlugin {
     async fn analyze_focus(&self, ctx: &AgentContext) -> Result<FocusAreas> {
-        let system = "You are a senior architect providing pre-review context.\nOutput ONLY valid JSON matching this schema:\n{\n  \"summary\":     \"<what this change does in 2 sentences>\",\n  \"focus_items\": [{ \"area\": \"Security\", \"rationale\": \"...\" }],\n  \"trade_offs\":  [\"...\"]\n}\nFocus items are SUGGESTIONS — debaters should also flag anything beyond these.".to_string();
+        let system = "You are a senior architect producing analyzer context for code review.\nOutput ONLY valid JSON matching this schema:\n{\n  \"summary\": \"<what changed, architecture impact, and purpose>\",\n  \"focus_items\": [{ \"area\": \"<review area>\", \"rationale\": \"<why this needs focus>\" }],\n  \"trade_offs\": [\"<trade-off or risk>\"]\n}\nThe summary must be markdown-ready text.".to_string();
         let user = format!("Diff to review:\n{}", ctx.diff);
         let resp: FocusAreas = self.run_cli(system, user)?;
         Ok(resp)
@@ -338,6 +386,9 @@ impl FocusAnalyzer for CliAgentPlugin {
 
 #[derive(Debug, Deserialize)]
 struct FindingsResponse {
+    #[serde(default)]
+    narrative: Option<String>,
+    #[serde(default)]
     findings: Vec<RawFindingResponse>,
 }
 
@@ -376,4 +427,55 @@ impl From<RawFindingResponse> for RawFinding {
 struct AutoFixResponse {
     unified_diff: String,
     explanation: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::GatheredContext;
+
+    fn sample_ctx() -> AgentContext {
+        AgentContext {
+            diff: "diff --git a/src/lib.rs b/src/lib.rs\n+let x = 1;".to_string(),
+            gathered: GatheredContext::default(),
+            focus: None,
+            dep_graph: None,
+        }
+    }
+
+    fn sample_plugin() -> CliAgentPlugin {
+        CliAgentPlugin {
+            id: "codex".to_string(),
+            persona: "Architecture Lead".to_string(),
+            command: "codex".to_string(),
+            args: vec![],
+        }
+    }
+
+    #[test]
+    fn round1_prompt_contract_contains_required_sections() {
+        let plugin = sample_plugin();
+        let ctx = sample_ctx();
+        let (system, user) = plugin.review_prompt_round1(&ctx);
+        let prompt = format!("{system}\n{user}");
+        assert!(prompt.contains("exhaustive round-1 code review"));
+        assert!(prompt.contains("correctness, security, performance"));
+        assert!(prompt.contains("\"narrative\""));
+        assert!(prompt.contains("\"findings\""));
+    }
+
+    #[test]
+    fn round_n_prompt_contract_contains_adversarial_constraints() {
+        let plugin = sample_plugin();
+        let ctx = sample_ctx();
+        let synthesis = crate::coordinator::CrossPollinationSynthesis {
+            summary: "Round 1 prior reviewer findings".to_string(),
+        };
+        let (system, user) = plugin.review_prompt_round_n(&ctx, 2, &synthesis);
+        let prompt = format!("{system}\n{user}");
+        assert!(prompt.contains("adversarial round-2 review"));
+        assert!(prompt.contains("prior-round discussion"));
+        assert!(prompt.contains("no same-round leakage"));
+        assert!(prompt.contains("Round 1 prior reviewer findings"));
+    }
 }

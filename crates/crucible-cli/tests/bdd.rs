@@ -1,5 +1,5 @@
 use assert_cmd::cargo::cargo_bin_cmd;
-use cucumber::{given, then, when, World};
+use cucumber::{World, given, then, when};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -29,7 +29,9 @@ fn empty_temp_project(world: &mut CliWorld) {
 }
 
 fn init_git_repo(world: &mut CliWorld) {
-    let temp_dir = world.temp_dir.get_or_insert_with(|| TempDir::new().expect("temp dir"));
+    let temp_dir = world
+        .temp_dir
+        .get_or_insert_with(|| TempDir::new().expect("temp dir"));
     let repo_dir = temp_dir.path();
     run_git(&["init"], repo_dir);
     run_git(&["config", "user.email", "bdd@example.com"], repo_dir);
@@ -54,7 +56,9 @@ fn run_git(args: &[&str], cwd: &Path) {
 fn write_mock_agent_config(world: &mut CliWorld, sleep_secs: Option<u64>) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
     let mock_path = repo_dir.join("mock-agent.sh");
-    let sleep_line = sleep_secs.map(|s| format!("sleep {s}\n")).unwrap_or_default();
+    let sleep_line = sleep_secs
+        .map(|s| format!("sleep {s}\n"))
+        .unwrap_or_default();
     let script = format!(
         r#"#!/usr/bin/env sh
 cat >/dev/null
@@ -65,7 +69,9 @@ JSON
         sleep = sleep_line
     );
     std::fs::write(&mock_path, script).expect("write mock agent");
-    let mut perms = std::fs::metadata(&mock_path).expect("metadata").permissions();
+    let mut perms = std::fs::metadata(&mock_path)
+        .expect("metadata")
+        .permissions();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -247,7 +253,10 @@ fn run_review_with_export(world: &mut CliWorld) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
     let export_path = repo_dir.join("issues.json");
     let export_arg = export_path.display().to_string();
-    let output = run_cmd(&["review", "--export-issues", export_arg.as_str()], Some(repo_dir));
+    let output = run_cmd(
+        &["review", "--export-issues", export_arg.as_str()],
+        Some(repo_dir),
+    );
     world.export_path = Some(export_path);
     world.output = Some(output);
 }
@@ -315,10 +324,52 @@ fn progress_output_emitted(world: &mut CliWorld) {
     assert!(stderr.contains("[progress] analyzer:start"));
     assert!(stderr.contains("[progress] analyzer:done"));
     assert!(stderr.contains("[progress] round:1 start"));
+    assert!(stderr.contains("[progress] round:1 status"));
     assert!(stderr.contains("[progress] agent:start round=1"));
     assert!(stderr.contains("[agent-review] round=1 id=claude-code"));
     assert!(stderr.contains("[progress] agent:done round=1"));
     assert!(stderr.contains("[progress] round:1 done"));
+}
+
+#[then("startup header is shown")]
+fn startup_header_shown(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Configuration loaded"));
+    assert!(stderr.contains("Found local changes"));
+    assert!(stderr.contains("Reviewers:"));
+    assert!(stderr.contains("Max rounds:"));
+}
+
+#[then("round status output includes durations")]
+fn round_status_with_durations(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[progress] round:1 status ["));
+    assert!(stderr.contains("OK claude-code"));
+    assert!(stderr.contains("s)"));
+}
+
+#[then("analysis section is shown")]
+fn analysis_section_shown(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--- Analysis ---"));
+}
+
+#[then("system context section is shown")]
+fn system_context_section_shown(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--- System Context ---"));
+}
+
+#[then("convergence output is shown")]
+fn convergence_output_shown(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[progress] convergence round="));
+    assert!(stderr.contains("-- Round"));
 }
 
 #[then("issues are exported with code locations")]
@@ -332,7 +383,13 @@ fn issues_exported_with_locations(world: &mut CliWorld) {
     let arr = json.as_array().expect("issues array");
     assert!(!arr.is_empty(), "issues array is empty");
     let first = &arr[0];
-    assert!(first.get("location").and_then(|v| v.as_str()).unwrap_or("").contains("README.md:1"));
+    assert!(
+        first
+            .get("location")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("README.md:1")
+    );
     assert!(first.get("raised_by").is_some(), "raised_by missing");
 }
 
@@ -342,6 +399,12 @@ fn review_exits_130(world: &mut CliWorld) {
     assert_eq!(status, 130);
     let stderr = world.interrupt_stderr.as_deref().unwrap_or("");
     assert!(stderr.contains("[progress] canceled"));
+}
+
+#[then("the review process completes successfully")]
+fn review_process_completes_successfully(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "review should complete and exit");
 }
 
 #[then("the review output is valid")]
@@ -357,11 +420,18 @@ fn main() {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if include_real {
-        futures::executor::block_on(CliWorld::cucumber().with_default_cli().run("tests/features"));
+        futures::executor::block_on(
+            CliWorld::cucumber()
+                .with_default_cli()
+                .run("tests/features"),
+        );
     } else {
-        futures::executor::block_on(CliWorld::cucumber().with_default_cli().filter_run(
-            "tests/features",
-            |_, _, sc| !sc.tags.iter().any(|t| t == "real-agents"),
-        ));
+        futures::executor::block_on(
+            CliWorld::cucumber()
+                .with_default_cli()
+                .filter_run("tests/features", |_, _, sc| {
+                    !sc.tags.iter().any(|t| t == "real-agents")
+                }),
+        );
     }
 }

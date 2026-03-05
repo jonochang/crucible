@@ -1,23 +1,29 @@
-use crate::analysis::FocusAreas;
 use crate::analysis::AgentContext;
+use crate::analysis::FocusAreas;
 use crate::config::CrucibleConfig;
 use crate::report::{AutoFix, Finding, RawFinding};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+
+#[derive(Debug, Clone)]
+pub struct AgentReviewOutput {
+    pub findings: Vec<RawFinding>,
+    pub narrative: String,
+}
 
 #[async_trait]
 pub trait AgentPlugin: Send + Sync {
     fn id(&self) -> &str;
     fn persona(&self) -> &str;
 
-    async fn analyze(&self, ctx: &AgentContext) -> Result<Vec<RawFinding>>;
+    async fn analyze(&self, ctx: &AgentContext) -> Result<AgentReviewOutput>;
 
     async fn debate(
         &self,
         ctx: &AgentContext,
         round: u8,
         synthesis: &crate::coordinator::CrossPollinationSynthesis,
-    ) -> Result<Vec<RawFinding>>;
+    ) -> Result<AgentReviewOutput>;
 
     async fn summarize(&self, ctx: &AgentContext, findings: &[Finding]) -> Result<AutoFix>;
 
@@ -70,8 +76,12 @@ impl PluginRegistry {
             .resolve_role(&cfg.plugins.analyzer)
             .ok_or_else(|| anyhow!("missing config for analyzer"))?;
 
-        let judge = crate::plugins::cli_agent::CliAgentPlugin::from_config(&cfg.plugins.judge, judge_cfg);
-        let analyzer = crate::plugins::cli_agent::CliAgentPlugin::from_config(&cfg.plugins.analyzer, analyzer_cfg);
+        let judge =
+            crate::plugins::cli_agent::CliAgentPlugin::from_config(&cfg.plugins.judge, judge_cfg);
+        let analyzer = crate::plugins::cli_agent::CliAgentPlugin::from_config(
+            &cfg.plugins.analyzer,
+            analyzer_cfg,
+        );
 
         Ok(Self {
             agents,
