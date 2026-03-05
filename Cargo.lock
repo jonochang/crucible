@@ -369,6 +369,7 @@ dependencies = [
  "cucumber",
  "futures",
  "git2",
+ "libc",
  "libcrucible",
  "ratatui",
  "serde_json",

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use libcrucible::config::CrucibleConfig;
@@ -23,6 +23,22 @@ enum Screen {
     DiffView,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentStatus {
+    Queued,
+    Running,
+    Done,
+    Error,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ProgressState {
+    analyzer_done: bool,
+    round: Option<u8>,
+    agents: Vec<String>,
+    statuses: std::collections::HashMap<String, AgentStatus>,
+}
+
 pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -37,17 +53,63 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
     let mut report: Option<ReviewReport> = None;
     let mut diff_scroll: u16 = 0;
     let mut status_line: Option<String> = None;
+    let mut progress = ProgressState::default();
     let mut last_tick = Instant::now();
+    let mut exit_code: Option<i32> = None;
 
     loop {
         while let Ok(event) = rx.try_recv() {
             match event {
                 ProgressEvent::AnalyzerStart => screen = Screen::Analyzing,
-                ProgressEvent::ReviewStart => screen = Screen::Reviewing,
+                ProgressEvent::AnalyzerDone => progress.analyzer_done = true,
+                ProgressEvent::RoundStart { round, agents } => {
+                    screen = Screen::Reviewing;
+                    progress.round = Some(round);
+                    progress.agents = agents.clone();
+                    progress.statuses = agents
+                        .into_iter()
+                        .map(|id| (id, AgentStatus::Queued))
+                        .collect();
+                }
+                ProgressEvent::AgentStart { id, .. } => {
+                    progress.statuses.insert(id, AgentStatus::Running);
+                }
+                ProgressEvent::AgentDone { id, .. } => {
+                    progress.statuses.insert(id, AgentStatus::Done);
+                }
+                ProgressEvent::AgentError { id, .. } => {
+                    progress.statuses.insert(id, AgentStatus::Error);
+                }
+                ProgressEvent::RoundDone { .. } => {}
                 ProgressEvent::Completed(rep) => {
+                    if status_line.is_none() {
+                        let critical = rep
+                            .findings
+                            .iter()
+                            .filter(|f| matches!(f.severity, libcrucible::report::Severity::Critical))
+                            .count();
+                        let warning = rep
+                            .findings
+                            .iter()
+                            .filter(|f| matches!(f.severity, libcrucible::report::Severity::Warning))
+                            .count();
+                        let info = rep
+                            .findings
+                            .iter()
+                            .filter(|f| matches!(f.severity, libcrucible::report::Severity::Info))
+                            .count();
+                        status_line = Some(format!(
+                            "Round 1 complete — {} findings ({} Critical, {} Warning, {} Info)",
+                            rep.findings.len(),
+                            critical,
+                            warning,
+                            info
+                        ));
+                    }
                     report = Some(rep);
                     screen = Screen::Review;
                 }
+                ProgressEvent::Canceled => {}
                 _ => {}
             }
         }
@@ -60,7 +122,7 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
 
             let content = match screen {
                 Screen::Analyzing => render_status("Analyzing diff…"),
-                Screen::Reviewing => render_status("Reviewing diff…"),
+                Screen::Reviewing => render_reviewing(&progress),
                 Screen::Review => render_review(report.as_ref(), status_line.as_deref()),
                 Screen::DiffView => render_diff(report.as_ref(), diff_scroll),
             };
@@ -94,6 +156,12 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                         },
                         _ => {}
                     }
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
+                    {
+                        exit_code = Some(130);
+                        break;
+                    }
                 }
             }
         }
@@ -111,6 +179,11 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
 
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
+
+    if let Some(code) = exit_code {
+        handle.abort();
+        return Ok(code);
+    }
 
     let report = match handle.await.context("review task join")? {
         Ok(rep) => rep,
@@ -170,6 +243,23 @@ fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) 
         lines.push(Line::from(status.to_string()));
     }
 
+    Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false })
+}
+
+fn render_reviewing<'a>(progress: &'a ProgressState) -> Paragraph<'a> {
+    let mut lines = Vec::new();
+    let round = progress.round.unwrap_or(1);
+    let analyzer = if progress.analyzer_done { "done" } else { "running" };
+    lines.push(Line::from(format!("Round {}/1  (Analyzer: {})", round, analyzer)));
+    for id in &progress.agents {
+        let status = match progress.statuses.get(id).copied().unwrap_or(AgentStatus::Queued) {
+            AgentStatus::Queued => "queued",
+            AgentStatus::Running => "running",
+            AgentStatus::Done => "done",
+            AgentStatus::Error => "error",
+        };
+        lines.push(Line::from(format!("{:<12} [{}]", id, status)));
+    }
     Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false })
 }
 

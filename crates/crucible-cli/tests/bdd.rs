@@ -1,6 +1,8 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use cucumber::{given, then, when, World};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 use tempfile::TempDir;
 
 #[derive(Debug, Default, World)]
@@ -8,6 +10,8 @@ struct CliWorld {
     output: Option<std::process::Output>,
     temp_dir: Option<TempDir>,
     repo_dir: Option<PathBuf>,
+    interrupt_status: Option<i32>,
+    interrupt_stderr: Option<String>,
 }
 
 fn run_cmd(args: &[&str], cwd: Option<&Path>) -> std::process::Output {
@@ -46,19 +50,20 @@ fn run_git(args: &[&str], cwd: &Path) {
     assert!(status.success(), "git command failed: {:?}", args);
 }
 
-fn write_mock_agent_config(world: &mut CliWorld) {
+fn write_mock_agent_config(world: &mut CliWorld, sleep_secs: Option<u64>) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
     let mock_path = repo_dir.join("mock-agent.sh");
-    std::fs::write(
-        &mock_path,
+    let sleep_line = sleep_secs.map(|s| format!("sleep {s}\n")).unwrap_or_default();
+    let script = format!(
         r#"#!/usr/bin/env sh
 cat >/dev/null
-cat <<'JSON'
-{"summary":"Mock summary","focus_items":[{"area":"Mock","rationale":"Mock rationale"}],"trade_offs":["none"],"findings":[{"severity":"Info","file":"README.md","line_start":1,"line_end":1,"message":"Mock finding","confidence":"Low"}],"unified_diff":"","explanation":""}
+{sleep}cat <<'JSON'
+{{"summary":"Mock summary","focus_items":[{{"area":"Mock","rationale":"Mock rationale"}}],"trade_offs":["none"],"findings":[{{"severity":"Info","file":"README.md","line_start":1,"line_end":1,"message":"Mock finding","confidence":"Low"}}],"unified_diff":"","explanation":""}}
 JSON
 "#,
-    )
-    .expect("write mock agent");
+        sleep = sleep_line
+    );
+    std::fs::write(&mock_path, script).expect("write mock agent");
     let mut perms = std::fs::metadata(&mock_path).expect("metadata").permissions();
     #[cfg(unix)]
     {
@@ -216,7 +221,12 @@ fn git_repo_with_diff(world: &mut CliWorld) {
 
 #[given("a mock crucible config")]
 fn mock_crucible_config(world: &mut CliWorld) {
-    write_mock_agent_config(world);
+    write_mock_agent_config(world, None);
+}
+
+#[given("a slow mock crucible config")]
+fn slow_mock_crucible_config(world: &mut CliWorld) {
+    write_mock_agent_config(world, Some(2));
 }
 
 #[given("a real agent crucible config")]
@@ -229,6 +239,26 @@ fn run_review(world: &mut CliWorld) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
     let output = run_cmd(&["review"], Some(repo_dir));
     world.output = Some(output);
+}
+
+#[when("I interrupt review")]
+fn interrupt_review(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let bin = assert_cmd::cargo::cargo_bin!("crucible");
+    let mut cmd = std::process::Command::new(bin);
+    cmd.current_dir(repo_dir);
+    cmd.arg("review");
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
+    let child = cmd.spawn().expect("spawn crucible");
+    std::thread::sleep(Duration::from_millis(200));
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+    let output = child.wait_with_output().expect("wait on crucible");
+    world.interrupt_status = output.status.code();
+    world.interrupt_stderr = Some(String::from_utf8_lossy(&output.stderr).to_string());
 }
 
 #[then("the config file is created")]
@@ -264,6 +294,27 @@ fn review_has_mock_finding(world: &mut CliWorld) {
     assert!(output.status.success(), "command failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Mock finding"));
+}
+
+#[then("progress output is emitted")]
+fn progress_output_emitted(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[progress] analyzer:start"));
+    assert!(stderr.contains("[progress] analyzer:done"));
+    assert!(stderr.contains("[progress] round:1 start"));
+    assert!(stderr.contains("[progress] agent:start round=1"));
+    assert!(stderr.contains("[progress] agent:done round=1"));
+    assert!(stderr.contains("[progress] round:1 done"));
+}
+
+#[then("the review exits with code 130")]
+fn review_exits_130(world: &mut CliWorld) {
+    let status = world.interrupt_status.expect("interrupt status");
+    assert_eq!(status, 130);
+    let stderr = world.interrupt_stderr.as_deref().unwrap_or("");
+    assert!(stderr.contains("[progress] canceled"));
 }
 
 #[then("the review output is valid")]

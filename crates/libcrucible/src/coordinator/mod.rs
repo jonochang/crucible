@@ -35,14 +35,29 @@ impl Coordinator {
 
         self.snapshotter.freeze_round(1, &HashMap::new());
 
-        self.emit(crate::progress::ProgressEvent::ReviewStart);
+        let round = 1;
+        let agents = self.registry.agents.iter().map(|a| a.id().to_string()).collect();
+        self.emit(crate::progress::ProgressEvent::RoundStart { round, agents });
         let agent_ctx = ctx.into_agent_ctx(Some(&focus));
         for agent in &self.registry.agents {
-            let raw = agent.analyze(&agent_ctx).await?;
-            self.consensus.ingest_round(&raw, 1, agent.id());
+            let id = agent.id();
+            self.emit(crate::progress::ProgressEvent::AgentStart { round, id: id.to_string() });
+            let raw = match agent.analyze(&agent_ctx).await {
+                Ok(raw) => raw,
+                Err(err) => {
+                    self.emit(crate::progress::ProgressEvent::AgentError {
+                        round,
+                        id: id.to_string(),
+                        message: err.to_string(),
+                    });
+                    return Err(err);
+                }
+            };
+            self.consensus.ingest_round(&raw, round, id);
+            self.emit(crate::progress::ProgressEvent::AgentDone { round, id: id.to_string() });
         }
         let findings = self.consensus.all_findings();
-        self.emit(crate::progress::ProgressEvent::ReviewDone);
+        self.emit(crate::progress::ProgressEvent::RoundDone { round });
 
         let auto_fix = if findings.iter().any(|f| f.severity >= Severity::Warning) {
             Some(self.registry.judge.summarize(&agent_ctx, &findings).await?)

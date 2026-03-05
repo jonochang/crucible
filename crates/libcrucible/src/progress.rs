@@ -4,8 +4,12 @@ use crate::report::ReviewReport;
 pub enum ProgressEvent {
     AnalyzerStart,
     AnalyzerDone,
-    ReviewStart,
-    ReviewDone,
+    RoundStart { round: u8, agents: Vec<String> },
+    AgentStart { round: u8, id: String },
+    AgentDone { round: u8, id: String },
+    AgentError { round: u8, id: String, message: String },
+    RoundDone { round: u8 },
     AutoFixReady,
     Completed(ReviewReport),
+    Canceled,
 }

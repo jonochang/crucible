@@ -16,6 +16,18 @@ Feature: Crucible CLI
     Then the review verdict is pass
     And the review findings include the mock finding
 
+  Scenario: Review emits progress output
+    Given a git repo with a diff
+    And a mock crucible config
+    When I run review
+    Then progress output is emitted
+
+  Scenario: Review exits on Ctrl+C
+    Given a git repo with a diff
+    And a slow mock crucible config
+    When I interrupt review
+    Then the review exits with code 130
+
   @real-agents
   Scenario: Run review with real agents
     Given a git repo with a diff
