@@ -53,7 +53,7 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
         }
 
         terminal.draw(|f| {
-            let size = f.size();
+            let size = f.area();
             let block = Block::default().borders(Borders::ALL).title("Crucible");
             let inner = block.inner(size);
             f.render_widget(block, size);
@@ -78,10 +78,7 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                                 if let Some(rep) = &report {
                                     if let Some(fix) = &rep.auto_fix {
                                         match apply_patch(&fix.unified_diff) {
-                                            Ok(_) => {
-                                                status_line = Some("Patch applied.".to_string());
-                                                break;
-                                            }
+                                            Ok(_) => break,
                                             Err(err) => status_line = Some(format!("Patch failed: {err}")),
                                         }
                                     }
