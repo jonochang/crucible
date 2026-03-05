@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 
 #[derive(Args)]
 pub struct ReviewArgs {
+    #[arg(value_name = "PR", help = "GitHub PR number or URL to review")]
+    pub pr: Option<String>,
     #[arg(long)]
     pub hook: bool,
     #[arg(long)]
@@ -29,6 +31,24 @@ pub struct ReviewArgs {
     pub reviewer: Option<String>,
     #[arg(long, help = "Override maximum review rounds")]
     pub max_rounds: Option<u8>,
+    #[arg(long, help = "Review local uncommitted diff (git diff HEAD)")]
+    pub local: bool,
+    #[arg(
+        long,
+        help = "Review branch diff against remote default branch (e.g. origin/main...HEAD)"
+    )]
+    pub repo: bool,
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "main",
+        help = "Review current branch against base branch (default: main)"
+    )]
+    pub branch: Option<String>,
+    #[arg(long, help = "Review specific files (git diff HEAD -- <files...>)")]
+    pub files: Vec<PathBuf>,
+    #[arg(long, default_value = "origin", help = "Git remote to use for --repo base and PR checkout")]
+    pub git_remote: String,
 }
 
 pub async fn run(args: ReviewArgs) -> Result<()> {
@@ -48,7 +68,41 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     if let Some(rounds) = args.max_rounds {
         cfg.coordinator.max_rounds = rounds.max(1);
     }
-    let use_tui = !args.hook && args.export_issues.is_none() && std::io::stdout().is_terminal();
+    let mode_count = u8::from(args.local)
+        + u8::from(args.repo)
+        + u8::from(args.pr.is_some())
+        + u8::from(args.branch.is_some())
+        + u8::from(!args.files.is_empty());
+    if mode_count > 1 {
+        anyhow::bail!("choose only one target mode: <PR>, --local, --repo, --branch, or --files");
+    }
+    let target = if let Some(pr) = &args.pr {
+        ReviewTarget::PullRequest(pr.clone())
+    } else if let Some(base) = &args.branch {
+        ReviewTarget::Branch(base.clone())
+    } else if !args.files.is_empty() {
+        ReviewTarget::Files(
+            args.files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>(),
+        )
+    } else if args.repo {
+        ReviewTarget::Repo
+    } else {
+        ReviewTarget::Local
+    };
+    let diff_override = resolve_review_diff(&target, &args.git_remote)?;
+    if matches!(target, ReviewTarget::Local) && diff_override.as_deref().map(str::trim).unwrap_or("").is_empty()
+    {
+        println!("No local changes detected; skipping review.");
+        return Ok(());
+    }
+
+    let use_tui = matches!(target, ReviewTarget::Local)
+        && !args.hook
+        && args.export_issues.is_none()
+        && std::io::stdout().is_terminal();
     if use_tui {
         let exit_code = crate::tui::run_review_tui(&cfg, args.interactive).await?;
         std::process::exit(exit_code);
@@ -58,10 +112,13 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     let log = open_review_log()?;
     let log = Arc::new(Mutex::new(log));
     let cfg_for_review = cfg.clone();
-    let mut review_handle =
-        tokio::spawn(
-            async move { libcrucible::run_review_with_progress(&cfg_for_review, tx).await },
-        );
+    let mut review_handle = tokio::spawn(async move {
+        if let Some(diff) = diff_override {
+            libcrucible::run_review_with_progress_diff(&cfg_for_review, tx, diff).await
+        } else {
+            libcrucible::run_review_with_progress(&cfg_for_review, tx).await
+        }
+    });
     let log_for_progress = log.clone();
     let progress_handle = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
@@ -112,6 +169,103 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+enum ReviewTarget {
+    /// Review uncommitted local changes from working tree/index.
+    Local,
+    /// Review current branch against remote default branch.
+    Repo,
+    /// Review current branch against explicit base branch.
+    Branch(String),
+    /// Review only selected files.
+    Files(Vec<String>),
+    /// Review a GitHub pull request (number or URL).
+    PullRequest(String),
+}
+
+/// Resolve the concrete diff content for the selected target mode.
+/// Returns `Ok(None)` only for empty local diffs so callers can skip gracefully.
+fn resolve_review_diff(target: &ReviewTarget, git_remote: &str) -> Result<Option<String>> {
+    match target {
+        ReviewTarget::Local => {
+            let diff = run_git_capture(&["diff", "HEAD"])?;
+            if diff.trim().is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(diff))
+        }
+        ReviewTarget::Repo => {
+            let base_branch = resolve_remote_default_branch(git_remote)?;
+            let range = format!("{git_remote}/{base_branch}...HEAD");
+            let diff = run_git_capture(&["diff", range.as_str()])?;
+            if diff.trim().is_empty() {
+                anyhow::bail!("no repo diff found for range {}", range);
+            }
+            Ok(Some(diff))
+        }
+        ReviewTarget::Branch(base) => {
+            let range = format!("{base}...HEAD");
+            let diff = run_git_capture(&["diff", range.as_str()])?;
+            if diff.trim().is_empty() {
+                anyhow::bail!("no branch diff found for range {}", range);
+            }
+            Ok(Some(diff))
+        }
+        ReviewTarget::Files(files) => {
+            let mut args = vec!["diff", "HEAD", "--"];
+            let owned = files.iter().map(String::as_str).collect::<Vec<_>>();
+            args.extend(owned);
+            let diff = run_git_capture(&args)?;
+            if diff.trim().is_empty() {
+                anyhow::bail!("no diff found for requested files");
+            }
+            Ok(Some(diff))
+        }
+        ReviewTarget::PullRequest(pr) => {
+            checkout_pr_branch(pr)?;
+            let diff = run_cmd_capture("gh", &["pr", "diff", pr.as_str()])?;
+            if diff.trim().is_empty() {
+                anyhow::bail!("no diff returned for PR {}", pr);
+            }
+            Ok(Some(diff))
+        }
+    }
+}
+
+fn resolve_remote_default_branch(git_remote: &str) -> Result<String> {
+    let ref_name = format!("refs/remotes/{git_remote}/HEAD");
+    let symref = run_git_capture(&["symbolic-ref", ref_name.as_str()])?;
+    let prefix = format!("refs/remotes/{git_remote}/");
+    let branch = symref.trim().strip_prefix(&prefix).unwrap_or("main");
+    Ok(branch.to_string())
+}
+
+/// Checkout the PR branch into the current repository using GitHub CLI.
+fn checkout_pr_branch(pr: &str) -> Result<()> {
+    let status = std::process::Command::new("gh")
+        .args(["pr", "checkout", pr])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to checkout PR branch via `gh pr checkout {}`", pr);
+    }
+    Ok(())
+}
+
+/// Run a git command and capture stdout as UTF-8.
+fn run_git_capture(args: &[&str]) -> Result<String> {
+    run_cmd_capture("git", args)
+}
+
+/// Run a command and capture stdout, surfacing stderr on failure.
+fn run_cmd_capture(program: &str, args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new(program).args(args).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("{} {:?} failed: {}", program, args, stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn print_report(report: &ReviewReport, issues: &[IssueRow]) {

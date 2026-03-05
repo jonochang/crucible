@@ -83,6 +83,58 @@ impl ReviewContext {
         })
     }
 
+    /// Build review context from an externally-provided patch string.
+    /// Used by CLI target modes such as PR/branch/files that precompute their own diff.
+    pub async fn from_diff(cwd: &Path, cfg: &CrucibleConfig, diff: String) -> Result<Self> {
+        let repo = Repository::discover(cwd).context("discover git repo")?;
+        let repo_root = repo.workdir().context("repo has no workdir")?.to_path_buf();
+        let changed_files = changed_files_from_patch(&diff);
+        let repo_path = repo.path().to_path_buf();
+
+        let context_cfg = cfg.context.clone();
+        let repo_root_clone = repo_root.clone();
+        let diff_clone = diff.clone();
+
+        let refs_cfg = context_cfg.clone();
+        let refs_task = task::spawn_blocking(move || {
+            ReferenceCollector::collect(&diff_clone, &repo_root_clone, &refs_cfg)
+        });
+
+        let history_cfg = context_cfg.clone();
+        let changed_files_clone = changed_files.clone();
+        let history_task = task::spawn_blocking(move || {
+            let repo = Repository::open(repo_path)?;
+            HistoryCollector::new(
+                history_cfg.history_max_commits,
+                history_cfg.history_max_days,
+            )
+            .collect(&changed_files_clone, &repo)
+        });
+
+        let docs_cfg = context_cfg.clone();
+        let docs_root = repo_root.clone();
+        let docs_task = task::spawn_blocking(move || {
+            DocsCollector::new(docs_cfg.docs_patterns, docs_cfg.docs_max_bytes).collect(&docs_root)
+        });
+
+        let (references, history, docs) = tokio::join!(refs_task, history_task, docs_task);
+        let gathered = GatheredContext {
+            references: references??,
+            history: history??,
+            docs: docs??,
+        };
+
+        Ok(Self {
+            diff,
+            changed_files,
+            base_ref: "custom".to_string(),
+            head_ref: "custom".to_string(),
+            repo_root,
+            gathered,
+            dep_graph: None,
+        })
+    }
+
     pub fn into_agent_ctx(
         &self,
         focus: Option<&crate::analysis::FocusAreas>,
@@ -131,4 +183,19 @@ fn diff_changed_files(repo: &Repository) -> Result<Vec<PathBuf>> {
     files.sort();
     files.dedup();
     Ok(files)
+}
+
+/// Extract changed file paths from unified diff headers (`+++ b/<path>`).
+fn changed_files_from_patch(diff: &str) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for line in diff.lines() {
+        if let Some(path) = line.strip_prefix("+++ b/") {
+            if path != "/dev/null" {
+                files.push(PathBuf::from(path));
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
 }

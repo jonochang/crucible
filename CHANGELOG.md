@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Added `crucible review [PR]` support to checkout PR branches and review PR diffs.
+- Added `--local` and `--repo` review target modes similar to Magpie.
+- Added `--branch [base]` and `--files <paths...>` review target modes.
+
 ## 0.1.11 - 2026-03-05
 
 - Added spinner + colored status line to the TUI analyzing/reviewing screens.

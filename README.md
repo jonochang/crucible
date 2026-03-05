@@ -162,15 +162,22 @@ For auto-fix requests, agents must return:
 Runs a multi-agent review of your working tree diff vs `HEAD`.
 
 ```bash
-crucible review [--hook] [--json] [--verbose] [--interactive] [--export-issues <path>]
+crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [--hook] [--json] [--verbose] [--interactive] [--reviewer <id>] [--max-rounds <n>] [--export-issues <path>]
 ```
 
 Behavior:
+- `PR` (number or URL) checks out the PR branch (`gh pr checkout`) and reviews that PR diff (`gh pr diff`).
+- `--local` reviews local uncommitted changes (`git diff HEAD`).
+- `--repo` reviews branch diff against remote default branch (`origin/<default>...HEAD`).
+- `--branch [base]` reviews current branch against base (default `main`).
+- `--files <paths...>` reviews only selected files (`git diff HEAD -- <paths...>`).
 - If stdout is a TTY and `--hook` is not set, it launches the TUI.
 - Default TUI mode auto-exits once complete; `--interactive` keeps the final screen open.
 - `--json` prints the full report as JSON (no TUI).
 - `--hook` sets the exit code based on the verdict (see Exit Codes).
 - `--verbose` streams agent stdout/stderr to help debug CLI integrations.
+- `--reviewer <id>` constrains review/analyzer/judge to one reviewer.
+- `--max-rounds <n>` overrides configured review rounds.
 - `--export-issues <path>` writes a deduplicated issue list with file/line locations and reviewers (`.json` or `.md`).
 - Progress and the final JSON report are appended to `review_report.log` in the current directory.
 - During review, Crucible streams startup header, analysis/system context, round status (with durations), convergence, and `[agent-review]` summaries.
