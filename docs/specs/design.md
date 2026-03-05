@@ -151,7 +151,7 @@ crucible/
 │   │   │   └── report.rs           # ReviewReport, Finding, AutoFix
 │   │   └── Cargo.toml
 │   │
-│   ├── crucible-cli/               # thin CLI wrapper
+│   ├── crucible-cli/               # CLI wrapper (builds `crucible`)
 │   │   ├── src/
 │   │   │   ├── main.rs
 │   │   │   ├── commands/
@@ -920,7 +920,7 @@ The cross-pollination synthesis strips agent identity before feeding it back int
 
 ```mermaid
 graph LR
-    CLI[crucible-cli] --> LIB[libcrucible]
+    CLI[crucible] --> LIB[libcrucible]
     LIB --> P1[plugin: claude-code]
     LIB --> P2[plugin: gemini]
     LIB --> P3[plugin: codex]

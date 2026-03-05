@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.4 - 2026-03-05
+
+- Build and install the `crucible` binary directly (no `crucible-cli` shim).
+
 ## 0.1.1 - 2026-03-04
 
 - Fixed `nix profile install` by aligning `git2` with libgit2 1.9.x and exporting flake package/app outputs.

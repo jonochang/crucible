@@ -7,6 +7,9 @@ Crucible runs locally, gathers rich context, asks a council of CLI-driven agents
 ## Quick Start
 
 ```bash
+# Install (Nix)
+nix profile install github:jonochang/crucible
+
 # Build
 cargo build --release
 

@@ -11,11 +11,11 @@ struct CliWorld {
 }
 
 fn run_cmd(args: &[&str], cwd: Option<&Path>) -> std::process::Output {
-    let mut cmd = cargo_bin_cmd!("crucible-cli");
+    let mut cmd = cargo_bin_cmd!("crucible");
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    cmd.args(args).output().expect("run crucible-cli command")
+    cmd.args(args).output().expect("run crucible command")
 }
 
 #[given("an empty temp project")]
@@ -247,7 +247,7 @@ fn review_help_shows_usage(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("output available");
     assert!(output.status.success(), "command failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Usage: crucible-cli review"));
+    assert!(stdout.contains("Usage: crucible review"));
 }
 
 #[then("the review verdict is pass")]

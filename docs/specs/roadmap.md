@@ -527,7 +527,7 @@ Auto-fix available. Run with TUI to apply: crucible review
 
 Emit `ReviewReport` serialized as JSON for scripting and CI.
 
-**Deliverable:** `cargo run -p crucible-cli -- review --json` works on a real repo with `ANTHROPIC_API_KEY` set.
+**Deliverable:** `cargo run -p crucible-cli --bin crucible -- review --json` works on a real repo with `ANTHROPIC_API_KEY` set.
 
 ---
 

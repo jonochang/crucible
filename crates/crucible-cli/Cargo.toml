@@ -1,8 +1,12 @@
 [package]
 name = "crucible-cli"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 license.workspace = true
+
+[[bin]]
+name = "crucible"
+path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
