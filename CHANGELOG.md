@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.9 - 2026-03-05
+
 - Added Magpie-style run header, phase, analysis, system context, parallel status, convergence, and round-complete progress events.
 - Added round-1 exhaustive and round-2+ adversarial reviewer prompt contracts with narrative output.
 - Added TUI auto-exit-by-default behavior with `--interactive` opt-in to keep the final screen open.
