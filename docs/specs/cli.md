@@ -9,6 +9,15 @@
 
 ## Non-TUI (`crucible review` when stdout is not a TTY or `--json` is set)
 
+### Command
+
+```bash
+crucible review [--hook] [--json] [--verbose] [--export-issues <path>]
+```
+
+Options:
+- `--export-issues <path>` writes deduplicated issues with location pointers (`file:line`) and contributing agents.
+
 ### Progress Output
 
 Crucible prints progress lines to stderr (stdout reserved for JSON or final report).

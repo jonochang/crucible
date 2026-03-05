@@ -10,6 +10,7 @@ struct CliWorld {
     output: Option<std::process::Output>,
     temp_dir: Option<TempDir>,
     repo_dir: Option<PathBuf>,
+    export_path: Option<PathBuf>,
     interrupt_status: Option<i32>,
     interrupt_stderr: Option<String>,
 }
@@ -241,6 +242,16 @@ fn run_review(world: &mut CliWorld) {
     world.output = Some(output);
 }
 
+#[when("I run review with issue export")]
+fn run_review_with_export(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let export_path = repo_dir.join("issues.json");
+    let export_arg = export_path.display().to_string();
+    let output = run_cmd(&["review", "--export-issues", export_arg.as_str()], Some(repo_dir));
+    world.export_path = Some(export_path);
+    world.output = Some(output);
+}
+
 #[when("I interrupt review")]
 fn interrupt_review(world: &mut CliWorld) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
@@ -308,6 +319,21 @@ fn progress_output_emitted(world: &mut CliWorld) {
     assert!(stderr.contains("[agent-review] round=1 id=claude-code"));
     assert!(stderr.contains("[progress] agent:done round=1"));
     assert!(stderr.contains("[progress] round:1 done"));
+}
+
+#[then("issues are exported with code locations")]
+fn issues_exported_with_locations(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let export_path = world.export_path.as_ref().expect("export path");
+    assert!(export_path.exists(), "issues export missing");
+    let raw = std::fs::read_to_string(export_path).expect("read issues export");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("parse issues export json");
+    let arr = json.as_array().expect("issues array");
+    assert!(!arr.is_empty(), "issues array is empty");
+    let first = &arr[0];
+    assert!(first.get("location").and_then(|v| v.as_str()).unwrap_or("").contains("README.md:1"));
+    assert!(first.get("raised_by").is_some(), "raised_by missing");
 }
 
 #[then("the review exits with code 130")]

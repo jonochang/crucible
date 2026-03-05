@@ -22,6 +22,12 @@ Feature: Crucible CLI
     When I run review
     Then progress output is emitted
 
+  Scenario: Review exports issues with locations
+    Given a git repo with a diff
+    And a mock crucible config
+    When I run review with issue export
+    Then issues are exported with code locations
+
   Scenario: Review exits on Ctrl+C
     Given a git repo with a diff
     And a slow mock crucible config

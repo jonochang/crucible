@@ -2,8 +2,10 @@ use anyhow::Result;
 use clap::Args;
 use libcrucible::config::CrucibleConfig;
 use libcrucible::progress::ProgressEvent;
-use libcrucible::report::{ReviewReport, Verdict};
+use libcrucible::report::{ReviewReport, Severity, Verdict};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -13,6 +15,8 @@ pub struct ReviewArgs {
     pub hook: bool,
     #[arg(long)]
     pub json: bool,
+    #[arg(long, help = "Export deduplicated issues list to a file (.json or .md)")]
+    pub export_issues: Option<PathBuf>,
     #[arg(long, help = "Enable verbose CLI agent logging")]
     pub verbose: bool,
 }
@@ -22,7 +26,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         libcrucible::plugins::set_verbose(true);
     }
     let cfg = CrucibleConfig::load()?;
-    let use_tui = !args.hook && std::io::stdout().is_terminal();
+    let use_tui = !args.hook && args.export_issues.is_none() && std::io::stdout().is_terminal();
     if use_tui {
         let exit_code = crate::tui::run_review_tui(&cfg).await?;
         std::process::exit(exit_code);
@@ -59,10 +63,18 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         let json = render_report_json(&report);
         println!("{json}");
         write_log_json(&log, &json);
+        if let Some(path) = &args.export_issues {
+            export_issues(path, &build_issue_list(&report))?;
+        }
         return Ok(());
     }
 
-    print_report(&report);
+    let issues = build_issue_list(&report);
+    print_report(&report, &issues);
+    if let Some(path) = &args.export_issues {
+        export_issues(path, &issues)?;
+        println!("\nExported issues to {}", path.display());
+    }
     let json = render_report_json(&report);
     write_log_json(&log, &json);
 
@@ -77,7 +89,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_report(report: &ReviewReport) {
+fn print_report(report: &ReviewReport, issues: &[IssueRow]) {
     let mut critical = 0;
     let mut warning = 0;
     let mut info = 0;
@@ -87,6 +99,19 @@ fn print_report(report: &ReviewReport) {
             libcrucible::report::Severity::Warning => warning += 1,
             libcrucible::report::Severity::Info => info += 1,
         }
+    }
+
+    println!();
+    println!("Issues Found ({} unique, {} total across reviewers)", issues.len(), report.findings.len());
+    for (idx, issue) in issues.iter().enumerate() {
+        println!(
+            "  {:>2}. [{:8}] {} {} [{}]",
+            idx + 1,
+            format_severity(&issue.severity),
+            issue.location,
+            issue.message,
+            issue.raised_by.join(", ")
+        );
     }
 
     println!("Crucible Review — {} findings ({} Critical, {} Warning, {} Info)", report.findings.len(), critical, warning, info);
@@ -118,6 +143,122 @@ fn format_severity(sev: &libcrucible::report::Severity) -> &'static str {
         libcrucible::report::Severity::Warning => "WARNING",
         libcrucible::report::Severity::Info => "INFO",
     }
+}
+
+#[derive(Debug, Clone)]
+struct IssueRow {
+    severity: Severity,
+    file: Option<String>,
+    line_start: Option<u32>,
+    line_end: Option<u32>,
+    location: String,
+    message: String,
+    raised_by: Vec<String>,
+}
+
+fn build_issue_list(report: &ReviewReport) -> Vec<IssueRow> {
+    let mut grouped: BTreeMap<(String, Option<String>, Option<u32>, Option<u32>, String), BTreeSet<String>> =
+        BTreeMap::new();
+    for finding in &report.findings {
+        let file = finding.file.as_ref().map(|p| p.display().to_string());
+        let line_start = finding.span.as_ref().map(|s| s.start);
+        let line_end = finding.span.as_ref().map(|s| s.end);
+        let loc = match (&file, line_start, line_end) {
+            (Some(f), Some(s), Some(e)) if s != e => format!("{f}:{s}-{e}"),
+            (Some(f), Some(s), _) => format!("{f}:{s}"),
+            (Some(f), None, _) => f.clone(),
+            _ => "<unknown>".to_string(),
+        };
+        let key = (
+            format_severity(&finding.severity).to_string(),
+            file.clone(),
+            line_start,
+            line_end,
+            finding.message.clone(),
+        );
+        grouped.entry(key).or_default().insert(finding.agent.clone());
+        let _ = loc;
+    }
+
+    let mut issues = grouped
+        .into_iter()
+        .map(|((severity, file, line_start, line_end, message), raised_by)| {
+            let sev = match severity.as_str() {
+                "CRITICAL" => Severity::Critical,
+                "WARNING" => Severity::Warning,
+                _ => Severity::Info,
+            };
+            let location = match (&file, line_start, line_end) {
+                (Some(f), Some(s), Some(e)) if s != e => format!("{f}:{s}-{e}"),
+                (Some(f), Some(s), _) => format!("{f}:{s}"),
+                (Some(f), None, _) => f.clone(),
+                _ => "<unknown>".to_string(),
+            };
+            IssueRow {
+                severity: sev,
+                file,
+                line_start,
+                line_end,
+                location,
+                message,
+                raised_by: raised_by.into_iter().collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    issues.sort_by(|a, b| {
+        let sa = severity_rank(&a.severity);
+        let sb = severity_rank(&b.severity);
+        sb.cmp(&sa).then(a.location.cmp(&b.location)).then(a.message.cmp(&b.message))
+    });
+    issues
+}
+
+fn severity_rank(sev: &Severity) -> u8 {
+    match sev {
+        Severity::Critical => 3,
+        Severity::Warning => 2,
+        Severity::Info => 1,
+    }
+}
+
+fn export_issues(path: &std::path::Path, issues: &[IssueRow]) -> Result<()> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    if ext.eq_ignore_ascii_case("md") {
+        let mut out = String::new();
+        out.push_str("# Crucible Issues\n\n");
+        for (idx, i) in issues.iter().enumerate() {
+            out.push_str(&format!(
+                "{}. [{}] `{}` {}\n",
+                idx + 1,
+                format_severity(&i.severity),
+                i.location,
+                i.message
+            ));
+            out.push_str(&format!("   - raised_by: {}\n", i.raised_by.join(", ")));
+        }
+        std::fs::write(path, out)?;
+        return Ok(());
+    }
+
+    let json = serde_json::to_string_pretty(
+        &issues
+            .iter()
+            .map(|i| {
+                serde_json::json!({
+                    "severity": format_severity(&i.severity),
+                    "file": i.file,
+                    "line_start": i.line_start,
+                    "line_end": i.line_end,
+                    "location": i.location,
+                    "message": i.message,
+                    "raised_by": i.raised_by
+                })
+            })
+            .collect::<Vec<_>>(),
+    )?;
+    std::fs::write(path, json)?;
+    Ok(())
 }
 
 fn emit_progress(event: &ProgressEvent) {
