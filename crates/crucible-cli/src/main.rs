@@ -6,7 +6,7 @@ mod commands;
 mod tui;
 
 #[derive(Parser)]
-#[command(name = "crucible")]
+#[command(name = "crucible", version, about = "Multi-agent code review CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -18,6 +18,7 @@ enum Command {
     Hook(commands::hook::HookArgs),
     Config(commands::config::ConfigArgs),
     Session(commands::session::SessionArgs),
+    Version,
 }
 
 #[tokio::main]
@@ -36,5 +37,9 @@ async fn run() -> Result<()> {
         Command::Hook(args) => commands::hook::run(args),
         Command::Config(args) => commands::config::run(args),
         Command::Session(args) => commands::session::run(args),
+        Command::Version => {
+            println!("crucible {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
     }
 }

@@ -10,14 +10,14 @@ Crucible runs locally, gathers rich context, asks a council of CLI-driven agents
 # Install (Nix)
 nix profile install github:jonochang/crucible
 
-# Build
-cargo build --release
-
 # Generate a local config
 crucible config init
 
 # Run a review (TUI if stdout is a terminal)
 crucible review
+
+# Build
+cargo build --release
 
 # JSON output for scripting/CI
 crucible review --json
@@ -60,7 +60,7 @@ Verdict: BLOCK
 
 ## Configuration
 
-Run `crucible config init` to generate `.crucible.toml` in your repo. Crucible also loads `~/.config/crucible/config.toml` if no local config is found.
+Run `crucible config init` to generate `.crucible.toml` in your repo. Crucible searches the current directory and parents for `.crucible.toml`, then falls back to `~/.config/crucible/config.toml`, otherwise defaults are used.
 
 Example (default values):
 
@@ -152,14 +152,65 @@ For auto-fix requests, agents must return:
 
 ## Commands
 
+### `crucible review`
+
+Runs a multi-agent review of your working tree diff vs `HEAD`.
+
+```bash
+crucible review [--hook] [--json] [--verbose]
 ```
-crucible review [--hook] [--json]
+
+Behavior:
+- If stdout is a TTY and `--hook` is not set, it launches the TUI.
+- `--json` prints the full report as JSON (no TUI).
+- `--hook` sets the exit code based on the verdict (see Exit Codes).
+- `--verbose` streams agent stdout/stderr to help debug CLI integrations.
+
+### `crucible hook`
+
+Manage a managed `pre-push` hook that runs `crucible review --hook`.
+
+```bash
 crucible hook install [--force]
 crucible hook uninstall
 crucible hook status
+```
+
+Behavior:
+- `install` writes `.git/hooks/pre-push`. If the hook exists and is not managed by Crucible, use `--force` to overwrite.
+- `uninstall` only removes hooks managed by Crucible.
+- `status` prints whether the hook is installed and whether `crucible` is on `PATH`.
+
+### `crucible config`
+
+Manage configuration files.
+
+```bash
 crucible config init
 crucible config validate
-crucible session list|resume|delete   # not available in MVP
+```
+
+Behavior:
+- `init` writes `.crucible.toml` in the current repo. It fails if the file already exists.
+- `validate` loads config (local or global) and prints `Config OK` on success.
+
+### `crucible session`
+
+Session management is reserved for future releases.
+
+```bash
+crucible session list
+crucible session resume <id>
+crucible session delete <id>
+```
+
+### `crucible version`
+
+Prints the CLI version.
+
+```bash
+crucible version
+crucible --version
 ```
 
 ## Hook Integration
@@ -177,6 +228,7 @@ crucible session list|resume|delete   # not available in MVP
 - `docs/specs/brief.md`
 - `docs/specs/design.md`
 - `docs/specs/roadmap.md`
+- `docs/usage.md`
 
 ## License
 
