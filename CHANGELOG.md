@@ -4,9 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.10 - 2026-03-05
+
 - Hook now executes `just crucible-pre-push` instead of calling `crucible review --hook` directly.
 - Added `Justfile` with `crucible-pre-push` target: skip when no diff, otherwise run single-reviewer hook review.
 - Added `crucible review --reviewer <id>` and `--max-rounds <n>` overrides for focused hook runs.
+- Added colored spinner/status-line rendering for live non-TUI progress updates.
 
 ## 0.1.9 - 2026-03-05
 

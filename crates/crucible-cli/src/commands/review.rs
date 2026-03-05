@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
 #[derive(Args)]
@@ -336,6 +337,7 @@ fn export_issues(path: &std::path::Path, issues: &[IssueRow]) -> Result<()> {
 }
 
 fn emit_progress(event: &ProgressEvent) {
+    render_spinner_status(event);
     match event {
         ProgressEvent::RunHeader {
             reviewers,
@@ -421,6 +423,51 @@ fn emit_progress(event: &ProgressEvent) {
         ProgressEvent::Completed(_) => {}
         ProgressEvent::Canceled => eprintln!("[progress] canceled"),
     }
+}
+
+#[derive(Default)]
+struct SpinnerState {
+    frame: usize,
+    phase: String,
+    round: Option<u8>,
+    statuses: String,
+}
+
+fn spinner_state() -> &'static Mutex<SpinnerState> {
+    static STATE: OnceLock<Mutex<SpinnerState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(SpinnerState::default()))
+}
+
+fn render_spinner_status(event: &ProgressEvent) {
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    let mut state = spinner_state().lock().expect("spinner lock");
+    match event {
+        ProgressEvent::PhaseStart { phase } => state.phase = phase.clone(),
+        ProgressEvent::RoundStart { round, .. } => state.round = Some(*round),
+        ProgressEvent::ParallelStatus { statuses, .. } => {
+            state.statuses = format_parallel_status(statuses);
+        }
+        ProgressEvent::PhaseDone { phase } => state.phase = format!("{phase} done"),
+        ProgressEvent::Completed(_) | ProgressEvent::Canceled => {
+            eprintln!();
+            return;
+        }
+        _ => {}
+    }
+    const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let frame = FRAMES[state.frame % FRAMES.len()];
+    state.frame = state.frame.wrapping_add(1);
+
+    let round = state.round.map(|r| format!("round {r}")).unwrap_or_else(|| "startup".to_string());
+    let phase = if state.phase.is_empty() { "initializing".to_string() } else { state.phase.clone() };
+    let status = if state.statuses.is_empty() { String::new() } else { format!(" | {}", state.statuses) };
+    let line = format!(
+        "\r\x1b[36m{frame}\x1b[0m \x1b[33m{phase}\x1b[0m ({round}){status}"
+    );
+    eprint!("{line}");
+    let _ = std::io::stderr().flush();
 }
 
 fn open_review_log() -> Result<std::fs::File> {
