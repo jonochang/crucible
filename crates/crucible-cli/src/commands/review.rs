@@ -56,14 +56,14 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     };
 
     if args.json {
-        let json = serde_json::to_string_pretty(&report)?;
+        let json = render_report_json(&report);
         println!("{json}");
         write_log_json(&log, &json);
         return Ok(());
     }
 
     print_report(&report);
-    let json = serde_json::to_string_pretty(&report)?;
+    let json = render_report_json(&report);
     write_log_json(&log, &json);
 
     if args.hook {
@@ -130,6 +130,17 @@ fn emit_progress(event: &ProgressEvent) {
         ProgressEvent::AgentStart { round, id } => {
             eprintln!("[progress] agent:start round={} id={}", round, id);
         }
+        ProgressEvent::AgentReview {
+            round,
+            id,
+            summary,
+            highlights,
+        } => {
+            eprintln!("[agent-review] round={} id={} {}", round, id, summary);
+            for h in highlights {
+                eprintln!("[agent-review]   [{}] {} {}", h.severity, h.location, h.message);
+            }
+        }
         ProgressEvent::AgentDone { round, id } => {
             eprintln!("[progress] agent:done round={} id={}", round, id);
         }
@@ -160,6 +171,17 @@ fn write_log_event(log: &Arc<Mutex<std::fs::File>>, event: &ProgressEvent) -> Re
         ProgressEvent::AgentStart { round, id } => {
             writeln!(file, "[progress] agent:start round={} id={}", round, id)?
         }
+        ProgressEvent::AgentReview {
+            round,
+            id,
+            summary,
+            highlights,
+        } => {
+            writeln!(file, "[agent-review] round={} id={} {}", round, id, summary)?;
+            for h in highlights {
+                writeln!(file, "[agent-review]   [{}] {} {}", h.severity, h.location, h.message)?;
+            }
+        }
         ProgressEvent::AgentDone { round, id } => {
             writeln!(file, "[progress] agent:done round={} id={}", round, id)?
         }
@@ -180,5 +202,36 @@ fn write_log_json(log: &Arc<Mutex<std::fs::File>>, json: &str) {
         let _ = writeln!(file, "[report]");
         let _ = writeln!(file, "{}", json);
         let _ = file.flush();
+    }
+}
+
+fn render_report_json(report: &ReviewReport) -> String {
+    match serde_json::to_string_pretty(report) {
+        Ok(s) => s,
+        Err(_) => {
+            let consensus = report
+                .consensus_map
+                .0
+                .iter()
+                .map(|(key, status)| {
+                    serde_json::json!({
+                        "file": key.file,
+                        "span": key.span,
+                        "agreed_count": status.agreed_count,
+                        "total_agents": status.total_agents,
+                        "severity": status.severity,
+                        "reached_quorum": status.reached_quorum
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_string_pretty(&serde_json::json!({
+                "verdict": report.verdict,
+                "findings": report.findings,
+                "consensus": consensus,
+                "auto_fix": report.auto_fix,
+                "session_id": report.session_id
+            }))
+            .unwrap_or_else(|_| "{}".to_string())
+        }
     }
 }

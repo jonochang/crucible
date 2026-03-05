@@ -54,6 +54,13 @@ impl Coordinator {
                     }
                 };
                 self.consensus.ingest_round(&raw, round, id);
+                let (summary, highlights) = summarize_agent_output(&raw);
+                self.emit(crate::progress::ProgressEvent::AgentReview {
+                    round,
+                    id: id.to_string(),
+                    summary,
+                    highlights,
+                });
                 self.emit(crate::progress::ProgressEvent::AgentDone { round, id: id.to_string() });
             }
             self.emit(crate::progress::ProgressEvent::RoundDone { round });
@@ -84,6 +91,44 @@ impl Coordinator {
             let _ = tx.send(event);
         }
     }
+}
+
+fn summarize_agent_output(raw: &[RawFinding]) -> (String, Vec<crate::progress::AgentFindingPreview>) {
+    let critical = raw.iter().filter(|f| f.severity == Severity::Critical).count();
+    let warning = raw.iter().filter(|f| f.severity == Severity::Warning).count();
+    let info = raw.iter().filter(|f| f.severity == Severity::Info).count();
+    let summary = if raw.is_empty() {
+        "No findings".to_string()
+    } else {
+        format!(
+            "{} findings ({} Critical, {} Warning, {} Info)",
+            raw.len(),
+            critical,
+            warning,
+            info
+        )
+    };
+
+    let mut ranked = raw.to_vec();
+    ranked.sort_by(|a, b| b.severity.cmp(&a.severity));
+    let highlights = ranked
+        .into_iter()
+        .take(3)
+        .map(|f| {
+            let location = match (&f.file, f.line_start) {
+                (Some(file), Some(line)) => format!("{}:{}", file.display(), line),
+                (Some(file), None) => file.display().to_string(),
+                _ => "<unknown>".to_string(),
+            };
+            crate::progress::AgentFindingPreview {
+                severity: format!("{:?}", f.severity).to_uppercase(),
+                location,
+                message: f.message,
+            }
+        })
+        .collect();
+
+    (summary, highlights)
 }
 
 #[derive(Debug, Clone, Default)]

@@ -166,6 +166,7 @@ Behavior:
 - `--hook` sets the exit code based on the verdict (see Exit Codes).
 - `--verbose` streams agent stdout/stderr to help debug CLI integrations.
 - Progress and the final JSON report are appended to `review_report.log` in the current directory.
+- As each agent completes, Crucible streams an `[agent-review]` summary with top findings.
 
 ### `crucible hook`
 

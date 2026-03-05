@@ -305,6 +305,7 @@ fn progress_output_emitted(world: &mut CliWorld) {
     assert!(stderr.contains("[progress] analyzer:done"));
     assert!(stderr.contains("[progress] round:1 start"));
     assert!(stderr.contains("[progress] agent:start round=1"));
+    assert!(stderr.contains("[agent-review] round=1 id=claude-code"));
     assert!(stderr.contains("[progress] agent:done round=1"));
     assert!(stderr.contains("[progress] round:1 done"));
 }

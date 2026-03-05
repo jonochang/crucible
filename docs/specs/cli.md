@@ -18,6 +18,7 @@ Phases:
 - `analyzer` start/end
 - review `round` start/end
 - per-agent start/end within a round
+- per-agent review summary with top findings
 - auto-fix ready
 
 Required line formats (exact prefixes):
@@ -27,6 +28,8 @@ Required line formats (exact prefixes):
 [progress] analyzer:done
 [progress] round:1 start (agents: claude-code,codex,gemini)
 [progress] agent:start round=1 id=claude-code
+[agent-review] round=1 id=claude-code 2 findings (1 Critical, 1 Warning, 0 Info)
+[agent-review]   [CRITICAL] src/auth.rs:47 Token unwrap without validation
 [progress] agent:done round=1 id=claude-code
 [progress] agent:start round=1 id=codex
 [progress] agent:done round=1 id=codex

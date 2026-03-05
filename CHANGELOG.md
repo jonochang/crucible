@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.8 - 2026-03-05
+
+- Stream per-agent review summaries and top findings during execution.
+- Show per-agent findings in the TUI reviewing screen and in `review_report.log`.
+- Add BDD assertion coverage for `[agent-review]` progress output.
+
 ## 0.1.7 - 2026-03-05
 
 - Write progress and final reports to `review_report.log`.

@@ -38,6 +38,13 @@ struct ProgressState {
     total_rounds: u8,
     agents: Vec<String>,
     statuses: std::collections::HashMap<String, AgentStatus>,
+    reviews: std::collections::HashMap<String, AgentReviewState>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AgentReviewState {
+    summary: String,
+    highlights: Vec<String>,
 }
 
 pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
@@ -77,6 +84,23 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                 }
                 ProgressEvent::AgentStart { id, .. } => {
                     progress.statuses.insert(id.clone(), AgentStatus::Running);
+                }
+                ProgressEvent::AgentReview {
+                    id,
+                    summary,
+                    highlights,
+                    ..
+                } => {
+                    progress.reviews.insert(
+                        id.clone(),
+                        AgentReviewState {
+                            summary: summary.clone(),
+                            highlights: highlights
+                                .iter()
+                                .map(|h| format!("[{}] {} {}", h.severity, h.location, h.message))
+                                .collect(),
+                        },
+                    );
                 }
                 ProgressEvent::AgentDone { id, .. } => {
                     progress.statuses.insert(id.clone(), AgentStatus::Done);
@@ -279,6 +303,17 @@ fn write_log_event(log: &mut std::fs::File, event: &ProgressEvent) {
         ProgressEvent::AgentStart { round, id } => {
             let _ = writeln!(log, "[progress] agent:start round={} id={}", round, id);
         }
+        ProgressEvent::AgentReview {
+            round,
+            id,
+            summary,
+            highlights,
+        } => {
+            let _ = writeln!(log, "[agent-review] round={} id={} {}", round, id, summary);
+            for h in highlights {
+                let _ = writeln!(log, "[agent-review]   [{}] {} {}", h.severity, h.location, h.message);
+            }
+        }
         ProgressEvent::AgentDone { round, id } => {
             let _ = writeln!(log, "[progress] agent:done round={} id={}", round, id);
         }
@@ -319,6 +354,12 @@ fn render_reviewing<'a>(progress: &'a ProgressState) -> Paragraph<'a> {
             AgentStatus::Error => "error",
         };
         lines.push(Line::from(format!("{:<12} [{}]", id, status)));
+        if let Some(review) = progress.reviews.get(id) {
+            lines.push(Line::from(format!("  -> {}", review.summary)));
+            for h in &review.highlights {
+                lines.push(Line::from(format!("     {}", h)));
+            }
+        }
     }
     Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false })
 }
