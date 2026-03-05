@@ -35,12 +35,10 @@ pub fn collect_precheck_signals(repo_root: &Path, cfg: &CrucibleConfig) -> Resul
     let has_rust = repo_root.join("Cargo.toml").exists();
 
     if cfg.prechecks.include_untangle {
-        signals.push(run_tool(
+        signals.extend(run_untangle_tools(
             repo_root,
             &cfg.gate.untangle_bin,
-            &["check"],
             cfg.prechecks.timeout_secs,
-            "untangle",
         ));
     }
     if has_rust && cfg.prechecks.include_linters {
@@ -72,6 +70,36 @@ pub fn collect_precheck_signals(repo_root: &Path, cfg: &CrucibleConfig) -> Resul
     }
 
     Ok(signals)
+}
+
+fn run_untangle_tools(repo_root: &Path, program: &str, timeout_secs: u64) -> Vec<PrecheckSignal> {
+    if program == "crucible" {
+        return vec![PrecheckSignal {
+            tool: "untangle".to_string(),
+            status: PrecheckStatus::Warn,
+            summary: "Skipped: gate.untangle_bin points to crucible; set it to untangle binary"
+                .to_string(),
+            command: "crucible analyze . --format json --quiet".to_string(),
+        }];
+    }
+    // Verified against `untangle --help`: analyze|diff|graph|config|service-graph|quality.
+    // Run structural analysis plus CRAP quality report.
+    vec![
+        run_tool(
+            repo_root,
+            program,
+            &["analyze", ".", "--format", "json", "--quiet"],
+            timeout_secs,
+            "untangle-analyze",
+        ),
+        run_tool(
+            repo_root,
+            program,
+            &["quality", ".", "--metric", "crap", "--format", "json", "--quiet"],
+            timeout_secs,
+            "untangle-quality-crap",
+        ),
+    ]
 }
 
 fn run_tool(

@@ -101,10 +101,12 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         ReviewTarget::Local
     };
     let diff_override = resolve_review_diff(&target, &args.git_remote)?;
-    if matches!(target, ReviewTarget::Local) && diff_override.as_deref().map(str::trim).unwrap_or("").is_empty()
-    {
-        println!("No local changes detected; skipping review.");
-        return Ok(());
+    if matches!(target, ReviewTarget::Local) {
+        let diff = diff_override.as_deref().unwrap_or_default();
+        if diff.trim().is_empty() || count_changed_lines(diff) == 0 {
+            println!("No local code changes detected; skipping review.");
+            return Ok(());
+        }
     }
 
     let use_tui = matches!(target, ReviewTarget::Local)
@@ -274,6 +276,13 @@ fn run_cmd_capture(program: &str, args: &[&str]) -> Result<String> {
         anyhow::bail!("{} {:?} failed: {}", program, args, stderr.trim());
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn count_changed_lines(diff: &str) -> usize {
+    diff.lines()
+        .filter(|line| line.starts_with('+') || line.starts_with('-'))
+        .filter(|line| !line.starts_with("+++ ") && !line.starts_with("--- "))
+        .count()
 }
 
 fn print_report(report: &ReviewReport, issues: &[IssueRow]) {

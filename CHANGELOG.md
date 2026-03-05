@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.15 - 2026-03-06
+
+- Updated untangle prechecks to use supported commands: `untangle analyze` and `untangle quality --metric crap`.
+- Added CRAP metric quality signal into review precheck context.
+- Avoid running local reviews when there are no changed code lines.
+- Added `untangle` to the dev shell in `flake.nix` (with source override to current upstream hash).
+
 ## 0.1.14 - 2026-03-06
 
 - Added `--debug` flag to write deep diagnostics to `crucible.log` (prompts + raw agent I/O).
