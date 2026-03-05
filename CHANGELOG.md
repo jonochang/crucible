@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.11 - 2026-03-05
+
+- Added spinner + colored status line to the TUI analyzing/reviewing screens.
+
 ## 0.1.10 - 2026-03-05
 
 - Hook now executes `just crucible-pre-push` instead of calling `crucible review --hook` directly.

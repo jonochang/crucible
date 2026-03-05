@@ -72,6 +72,7 @@ pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i
     let mut status_line: Option<String> = None;
     let mut progress = ProgressState::default();
     let mut last_tick = Instant::now();
+    let mut spinner_idx: usize = 0;
     let mut exit_code: Option<i32> = None;
 
     loop {
@@ -200,8 +201,8 @@ pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i
             f.render_widget(block, size);
 
             let content = match screen {
-                Screen::Analyzing => render_status("Analyzing diff..."),
-                Screen::Reviewing => render_reviewing(&progress),
+                Screen::Analyzing => render_analyzing(&progress, spinner_frame(spinner_idx)),
+                Screen::Reviewing => render_reviewing(&progress, spinner_frame(spinner_idx)),
                 Screen::Review => render_review(report.as_ref(), status_line.as_deref()),
                 Screen::DiffView => render_diff(report.as_ref(), diff_scroll),
             };
@@ -259,6 +260,7 @@ pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i
 
         if last_tick.elapsed() > Duration::from_millis(250) {
             last_tick = Instant::now();
+            spinner_idx = spinner_idx.wrapping_add(1);
         }
     }
 
@@ -285,8 +287,26 @@ pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i
     Ok(code)
 }
 
-fn render_status(message: &str) -> Paragraph<'_> {
-    Paragraph::new(Text::from(Line::from(vec![Span::raw(message)])))
+fn render_analyzing<'a>(progress: &'a ProgressState, spinner: &'static str) -> Paragraph<'a> {
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled(format!("{spinner} "), Style::default().fg(Color::Cyan)),
+        Span::styled("Analyzing changes...", Style::default().fg(Color::Yellow)),
+    ]));
+    if let Some(header) = &progress.run_header {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            header.clone(),
+            Style::default().fg(Color::Gray),
+        )));
+    }
+    if let Some(phase) = &progress.phase {
+        lines.push(Line::from(Span::styled(
+            format!("Phase: {phase}"),
+            Style::default().fg(Color::Green),
+        )));
+    }
+    Paragraph::new(Text::from(lines))
         .alignment(Alignment::Left)
         .wrap(Wrap { trim: true })
 }
@@ -466,8 +486,12 @@ fn write_log_json(log: &mut std::fs::File, json: &str) {
     let _ = log.flush();
 }
 
-fn render_reviewing<'a>(progress: &'a ProgressState) -> Paragraph<'a> {
+fn render_reviewing<'a>(progress: &'a ProgressState, spinner: &'static str) -> Paragraph<'a> {
     let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled(format!("{spinner} "), Style::default().fg(Color::Cyan)),
+        Span::styled("Review in progress", Style::default().fg(Color::Yellow)),
+    ]));
     if let Some(run_header) = &progress.run_header {
         lines.push(Line::from(run_header.clone()));
     }
@@ -523,6 +547,11 @@ fn render_reviewing<'a>(progress: &'a ProgressState) -> Paragraph<'a> {
         }
     }
     Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false })
+}
+
+fn spinner_frame(idx: usize) -> &'static str {
+    const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    FRAMES[idx % FRAMES.len()]
 }
 
 fn render_diff(report: Option<&ReviewReport>, scroll: u16) -> Paragraph<'_> {
