@@ -74,7 +74,11 @@ pub fn extract_symbols(diff: &str, repo_root: &Path) -> Result<Vec<Symbol>> {
             if let Some(kind) = kind {
                 if overlaps_any(node, &ranges) {
                     if let Some(name) = symbol_name(&node, &source) {
-                        symbols.push(Symbol { name, kind, file: file.clone() });
+                        symbols.push(Symbol {
+                            name,
+                            kind,
+                            file: file.clone(),
+                        });
                     }
                 }
             }
@@ -88,7 +92,11 @@ pub fn extract_symbols(diff: &str, repo_root: &Path) -> Result<Vec<Symbol>> {
     Ok(symbols)
 }
 
-pub fn trace_references(symbols: &[Symbol], repo_root: &Path, cfg: &ContextConfig) -> Result<Vec<Reference>> {
+pub fn trace_references(
+    symbols: &[Symbol],
+    repo_root: &Path,
+    cfg: &ContextConfig,
+) -> Result<Vec<Reference>> {
     if symbols.is_empty() {
         return Ok(Vec::new());
     }
@@ -150,7 +158,8 @@ fn overlaps_any(node: Node, ranges: &[LineRange]) -> bool {
 }
 
 fn symbol_name(node: &Node, source: &str) -> Option<String> {
-    node.child_by_field_name("name").and_then(|n| n.utf8_text(source.as_bytes()).ok())
+    node.child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
         .map(|s| s.to_string())
 }
 

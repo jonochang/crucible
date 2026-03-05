@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- Added Magpie-style run header, phase, analysis, system context, parallel status, convergence, and round-complete progress events.
+- Added round-1 exhaustive and round-2+ adversarial reviewer prompt contracts with narrative output.
+- Added TUI auto-exit-by-default behavior with `--interactive` opt-in to keep the final screen open.
+- Hardened issue dedup normalization and preserved location-rich issue exports (`.json` and `.md`).
+- Expanded BDD scenarios and unit tests for parity behavior and prompt/runtime helpers.
+
 ## 0.1.8 - 2026-03-05
 
 - Stream per-agent review summaries and top findings during execution.

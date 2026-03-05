@@ -1,6 +1,6 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use git2::{Repository, Sort};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -19,7 +19,10 @@ pub struct HistoryCollector {
 
 impl HistoryCollector {
     pub fn new(max_commits: usize, max_days: u32) -> Self {
-        Self { max_commits, max_days }
+        Self {
+            max_commits,
+            max_days,
+        }
     }
 
     pub fn collect(&self, files: &[PathBuf], repo: &Repository) -> Result<Vec<CommitSummary>> {
@@ -30,7 +33,10 @@ impl HistoryCollector {
         let cutoff = SystemTime::now()
             .checked_sub(Duration::from_secs(self.max_days as u64 * 86400))
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        let cutoff_ts = cutoff.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let cutoff_ts = cutoff
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
 
         let mut summaries = Vec::new();
         for oid in revwalk {
@@ -62,7 +68,9 @@ impl HistoryCollector {
             if touched {
                 let author = commit.author();
                 let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(time.seconds(), 0)
-                    .unwrap_or_else(|| chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap());
+                    .unwrap_or_else(|| {
+                        chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap()
+                    });
                 let summary = CommitSummary {
                     sha: commit.id().to_string(),
                     message: commit.summary().unwrap_or("").to_string(),

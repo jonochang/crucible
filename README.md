@@ -16,6 +16,9 @@ crucible config init
 # Run a review (TUI if stdout is a terminal)
 crucible review
 
+# Keep final TUI screen open after completion
+crucible review --interactive
+
 # Build
 cargo build --release
 
@@ -131,6 +134,7 @@ Each agent is invoked with a prompt on stdin. The response **must** be valid JSO
 
 ```json
 {
+  "narrative": "<concise review summary>",
   "findings": [
     {
       "severity": "Critical | Warning | Info",
@@ -157,17 +161,18 @@ For auto-fix requests, agents must return:
 Runs a multi-agent review of your working tree diff vs `HEAD`.
 
 ```bash
-crucible review [--hook] [--json] [--verbose] [--export-issues <path>]
+crucible review [--hook] [--json] [--verbose] [--interactive] [--export-issues <path>]
 ```
 
 Behavior:
 - If stdout is a TTY and `--hook` is not set, it launches the TUI.
+- Default TUI mode auto-exits once complete; `--interactive` keeps the final screen open.
 - `--json` prints the full report as JSON (no TUI).
 - `--hook` sets the exit code based on the verdict (see Exit Codes).
 - `--verbose` streams agent stdout/stderr to help debug CLI integrations.
 - `--export-issues <path>` writes a deduplicated issue list with file/line locations and reviewers (`.json` or `.md`).
 - Progress and the final JSON report are appended to `review_report.log` in the current directory.
-- As each agent completes, Crucible streams an `[agent-review]` summary with top findings.
+- During review, Crucible streams startup header, analysis/system context, round status (with durations), convergence, and `[agent-review]` summaries.
 
 ### `crucible hook`
 

@@ -13,7 +13,12 @@ pub struct ReviewReport {
 }
 
 impl ReviewReport {
-    pub fn from_findings(findings: &[Finding], cfg: &crate::config::VerdictConfig, consensus: ConsensusMap, auto_fix: Option<AutoFix>) -> Self {
+    pub fn from_findings(
+        findings: &[Finding],
+        cfg: &crate::config::VerdictConfig,
+        consensus: ConsensusMap,
+        auto_fix: Option<AutoFix>,
+    ) -> Self {
         let verdict = Verdict::from_findings(findings, cfg);
         Self {
             verdict,

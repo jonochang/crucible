@@ -52,8 +52,11 @@ impl ReviewContext {
         let changed_files_clone = changed_files.clone();
         let history_task = task::spawn_blocking(move || {
             let repo = Repository::open(repo_path)?;
-            HistoryCollector::new(history_cfg.history_max_commits, history_cfg.history_max_days)
-                .collect(&changed_files_clone, &repo)
+            HistoryCollector::new(
+                history_cfg.history_max_commits,
+                history_cfg.history_max_days,
+            )
+            .collect(&changed_files_clone, &repo)
         });
 
         let docs_cfg = context_cfg.clone();
@@ -80,7 +83,10 @@ impl ReviewContext {
         })
     }
 
-    pub fn into_agent_ctx(&self, focus: Option<&crate::analysis::FocusAreas>) -> crate::analysis::AgentContext {
+    pub fn into_agent_ctx(
+        &self,
+        focus: Option<&crate::analysis::FocusAreas>,
+    ) -> crate::analysis::AgentContext {
         crate::analysis::AgentContext {
             diff: self.diff.clone(),
             gathered: self.gathered.clone(),

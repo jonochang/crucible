@@ -1,10 +1,11 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Args, Subcommand};
 use git2::Repository;
 use std::fs;
 use std::path::PathBuf;
 
-const HEADER: &str = "# Managed by Crucible — do not edit manually (crucible hook uninstall to remove)";
+const HEADER: &str =
+    "# Managed by Crucible — do not edit manually (crucible hook uninstall to remove)";
 
 #[derive(Args)]
 pub struct HookArgs {
@@ -14,7 +15,10 @@ pub struct HookArgs {
 
 #[derive(Subcommand)]
 pub enum HookCommand {
-    Install { #[arg(long)] force: bool },
+    Install {
+        #[arg(long)]
+        force: bool,
+    },
     Uninstall,
     Status,
 }
@@ -36,7 +40,10 @@ fn install(force: bool) -> Result<()> {
         }
     }
 
-    let contents = format!("#!/usr/bin/env bash\n{}\nset -euo pipefail\nexec crucible review --hook\n", HEADER);
+    let contents = format!(
+        "#!/usr/bin/env bash\n{}\nset -euo pipefail\nexec crucible review --hook\n",
+        HEADER
+    );
     fs::write(&hook_path, contents).context("write pre-push hook")?;
     #[cfg(unix)]
     {
@@ -69,7 +76,10 @@ fn uninstall() -> Result<()> {
 
 fn status() -> Result<()> {
     let hook_path = hook_path()?;
-    let installed = hook_path.exists() && fs::read_to_string(&hook_path).unwrap_or_default().contains(HEADER);
+    let installed = hook_path.exists()
+        && fs::read_to_string(&hook_path)
+            .unwrap_or_default()
+            .contains(HEADER);
     let on_path = which::which("crucible").is_ok();
     println!("Hook installed: {}", if installed { "yes" } else { "no" });
     println!("crucible on PATH: {}", if on_path { "yes" } else { "no" });

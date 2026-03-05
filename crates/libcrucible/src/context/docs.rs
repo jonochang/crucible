@@ -17,7 +17,10 @@ pub struct DocsCollector {
 
 impl DocsCollector {
     pub fn new(patterns: Vec<String>, max_bytes: usize) -> Self {
-        Self { patterns, max_bytes }
+        Self {
+            patterns,
+            max_bytes,
+        }
     }
 
     pub fn collect(&self, root: &Path) -> Result<Vec<DocSnippet>> {

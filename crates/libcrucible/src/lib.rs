@@ -3,9 +3,9 @@ pub mod config;
 pub mod context;
 pub mod coordinator;
 pub mod plugin;
-pub mod report;
-pub mod progress;
 pub mod plugins;
+pub mod progress;
+pub mod report;
 
 use anyhow::Result;
 use coordinator::Coordinator;

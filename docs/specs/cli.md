@@ -2,116 +2,94 @@
 
 ## Goals
 
-- Make review progress observable in both TUI and non-TUI modes.
-- Provide per-agent and per-round visibility similar to Magpie.
-- Allow fast, safe interruption via `Ctrl+C` and `Ctrl+D`.
-- Keep outputs stable enough for tests and CI logs.
+- Make runtime progress explicit (startup -> analysis -> rounds -> convergence -> finalization).
+- Show per-agent status and durations while reviews are running.
+- Show analyzer/system-context output before reviewer rounds.
+- Exit cleanly by default when complete; keep screen open only with `--interactive`.
 
-## Non-TUI (`crucible review` when stdout is not a TTY or `--json` is set)
-
-### Command
+## `crucible review`
 
 ```bash
-crucible review [--hook] [--json] [--verbose] [--export-issues <path>]
+crucible review [--hook] [--json] [--verbose] [--interactive] [--export-issues <path>]
 ```
 
-Options:
-- `--export-issues <path>` writes deduplicated issues with location pointers (`file:line`) and contributing agents.
+Flags:
+- `--interactive`: keep TUI open at completion (default is auto-exit).
+- `--json`: print report JSON to stdout.
+- `--hook`: return hook-friendly exit code from verdict.
+- `--verbose`: forward richer agent CLI debug output.
+- `--export-issues`: write deduped issue list (`.json` or `.md`).
 
-### Progress Output
+## Progress/Event Contract
 
-Crucible prints progress lines to stderr (stdout reserved for JSON or final report).
-It also appends the same progress lines to `review_report.log` in the current working directory.
+Crucible emits and logs these lifecycle events:
 
-Phases:
-- `analyzer` start/end
-- review `round` start/end
-- per-agent start/end within a round
-- per-agent review summary with top findings
-- auto-fix ready
+- `RunHeader`
+- `PhaseStart`
+- `AnalyzerStart`
+- `AnalysisReady`
+- `SystemContextReady`
+- `AnalyzerDone`
+- `RoundStart`
+- `ParallelStatus`
+- `AgentStart`
+- `AgentReview`
+- `AgentDone` / `AgentError`
+- `RoundDone`
+- `ConvergenceJudgment`
+- `RoundComplete`
+- `PhaseDone`
+- `AutoFixReady`
+- `Completed`
+- `Canceled`
 
-Required line formats (exact prefixes):
+Non-TTY output prints deterministic lines to stderr and appends the same lifecycle to `review_report.log`.
 
-```
-[progress] analyzer:start
-[progress] analyzer:done
-[progress] round:1 start (agents: claude-code,codex,gemini)
-[progress] agent:start round=1 id=claude-code
-[agent-review] round=1 id=claude-code 2 findings (1 Critical, 1 Warning, 0 Info)
-[agent-review]   [CRITICAL] src/auth.rs:47 Token unwrap without validation
-[progress] agent:done round=1 id=claude-code
-[progress] agent:start round=1 id=codex
-[progress] agent:done round=1 id=codex
-[progress] round:1 done
-[progress] round:2 start (agents: claude-code,codex,gemini)
-[progress] round:2 done
-[progress] autofix:ready
-```
+## Non-TTY Output Shape
 
-Notes:
-- Agent start/done lines may interleave.
-- If a review is canceled, emit:
-  `"[progress] canceled"` then exit `130`.
+Crucible prints:
 
-### Report Log
+- Startup header:
+  - `Configuration loaded`
+  - `Found local changes (<n> lines)`
+  - `Reviewers: ...`
+  - `Max rounds: ...`
+- Analysis block (`--- Analysis ---`)
+- System context block (`--- System Context ---`)
+- Round lifecycle (`round:start`, `round:status`, per-agent status)
+- Convergence line (`verdict=CONVERGED|NOT_CONVERGED`)
+- Round divider (`-- Round N/M complete --`)
+- Final issue table + verdict
 
-At completion, Crucible appends a JSON report to `review_report.log`:
+## TUI Behavior
 
-```
-[report]
-{ ... pretty JSON ... }
-```
+- Shows phase, round, analyzer status, compact parallel agent status, analysis/system-context snippets, and convergence status.
+- `Ctrl+C` and `Ctrl+D` exit with code `130` and restore terminal.
+- Default behavior auto-exits at completion; `--interactive` keeps final screen open.
 
-### Exit Codes
+## Issue Export Contract
 
-- `0` success
-- `1` failures (including hook verdict block)
-- `130` user interrupt (Ctrl+C or Ctrl+D)
+Deduped issue schema:
 
-## TUI (`crucible review` with TTY)
+- `severity`
+- `file`
+- `line_start`
+- `line_end`
+- `location`
+- `message`
+- `raised_by`
 
-### Status Panel
+Supported outputs:
+- `.json`: structured array
+- `.md`: numbered markdown list
 
-The main screen displays a live status panel:
+Dedup key normalization:
+- case-insensitive
+- whitespace-normalized
+- keyed by severity + file + span + message
 
-```
-Round 1/2  (Analyzer: done)
-claude-code  [running]
-codex        [done]
-gemini       [queued]
-```
+## Exit Codes
 
-Statuses:
-- `queued` (not started)
-- `running` (in progress)
-- `done` (completed)
-- `error` (agent failed)
-
-### Interrupts
-
-- `Ctrl+C` exits immediately, aborts any in-flight agent runs, restores terminal, exit code `130`.
-- `Ctrl+D` exits immediately with same behavior.
-
-### Additional Feedback
-
-At the end of each round, the TUI prints a short summary block before moving to the final report view:
-
-```
-Round 1 complete — 3 findings (1 Critical, 1 Warning, 1 Info)
-```
-
-### Report Log
-
-The TUI also writes progress lines and the final JSON report to `review_report.log`.
-
-## Test Requirements (BDD)
-
-### Non-TUI progress output
-
-- Running `crucible review` with a mock agent and stdout redirected must emit progress lines to stderr.
-- Expected lines include `analyzer:start`, `round:1 start`, `agent:start`, `agent:done`, `round:1 done`.
-
-### Interrupt handling
-
-- When running in TUI mode, sending `Ctrl+C` should terminate the process with exit code `130`.
-- When running in non-TUI mode, sending `Ctrl+C` should terminate the process with exit code `130`.
+- `0`: success
+- `1`: failure / blocked hook verdict
+- `130`: user interrupt (`Ctrl+C`, `Ctrl+D`)

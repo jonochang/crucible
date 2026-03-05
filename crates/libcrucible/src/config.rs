@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -81,8 +81,13 @@ pub struct CliPluginConfig {
 impl Default for CrucibleConfig {
     fn default() -> Self {
         Self {
-            crucible: CrucibleSection { version: "1".to_string() },
-            gate: GateConfig { enabled: true, untangle_bin: "untangle".to_string() },
+            crucible: CrucibleSection {
+                version: "1".to_string(),
+            },
+            gate: GateConfig {
+                enabled: true,
+                untangle_bin: "untangle".to_string(),
+            },
             context: ContextConfig {
                 reference_max_depth: 2,
                 reference_max_files: 30,
@@ -101,16 +106,30 @@ impl Default for CrucibleConfig {
                 agent_timeout_secs: 90,
                 devil_advocate: false,
             },
-            verdict: VerdictConfig { block_on: "Critical".to_string() },
-            rate_limits: RateLimitConfig { anthropic_rpm: 50, google_rpm: 60, openai_rpm: 60 },
+            verdict: VerdictConfig {
+                block_on: "Critical".to_string(),
+            },
+            rate_limits: RateLimitConfig {
+                anthropic_rpm: 50,
+                google_rpm: 60,
+                openai_rpm: 60,
+            },
             plugins: PluginsConfig {
-                agents: vec!["claude-code".to_string(), "codex".to_string(), "gemini".to_string()],
+                agents: vec![
+                    "claude-code".to_string(),
+                    "codex".to_string(),
+                    "gemini".to_string(),
+                ],
                 judge: "claude-code".to_string(),
                 analyzer: "claude-code".to_string(),
                 paths: vec![],
                 claude_code: CliPluginConfig {
                     command: "claude".to_string(),
-                    args: vec!["-p".to_string(), "--output-format".to_string(), "json".to_string()],
+                    args: vec![
+                        "-p".to_string(),
+                        "--output-format".to_string(),
+                        "json".to_string(),
+                    ],
                     persona: "Security Auditor".to_string(),
                     role_weight: 2.0,
                 },
@@ -172,7 +191,8 @@ fn find_config_path(start: &Path) -> Option<PathBuf> {
 }
 
 fn load_from_path(path: &Path) -> Result<CrucibleConfig> {
-    let raw = fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
     let expanded = expand_env(&raw)?;
     let cfg: CrucibleConfig = toml::from_str(&expanded).context("parse config toml")?;
     Ok(cfg)
@@ -193,7 +213,10 @@ fn expand_env(input: &str) -> Result<String> {
     });
 
     if !missing.is_empty() {
-        return Err(anyhow!("missing env vars in config: {}", missing.join(", ")));
+        return Err(anyhow!(
+            "missing env vars in config: {}",
+            missing.join(", ")
+        ));
     }
     Ok(output.to_string())
 }
