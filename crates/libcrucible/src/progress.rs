@@ -70,6 +70,7 @@ pub enum ProgressEvent {
         id: String,
         summary: String,
         highlights: Vec<AgentFindingPreview>,
+        details: String,
     },
     AgentDone {
         round: u8,

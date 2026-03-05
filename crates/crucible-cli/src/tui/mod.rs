@@ -53,6 +53,7 @@ struct ProgressState {
 struct AgentReviewState {
     summary: String,
     highlights: Vec<String>,
+    details: String,
 }
 
 pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i32> {
@@ -139,6 +140,7 @@ pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i
                     id,
                     summary,
                     highlights,
+                    details,
                     ..
                 } => {
                     progress.reviews.insert(
@@ -149,6 +151,7 @@ pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i
                                 .iter()
                                 .map(|h| format!("[{}] {} {}", h.severity, h.location, h.message))
                                 .collect(),
+                            details: details.clone(),
                         },
                     );
                 }
@@ -341,6 +344,13 @@ fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) 
             lines.push(Line::from(""));
             lines.push(Line::from("[Q] Quit"));
         }
+        if let Some(final_analysis) = &report.final_analysis_markdown {
+            lines.push(Line::from(""));
+            lines.push(Line::from("Final Analysis:"));
+            for line in final_analysis.lines() {
+                lines.push(Line::from(line.to_string()));
+            }
+        }
     } else {
         lines.push(Line::from("No report yet"));
     }
@@ -427,8 +437,10 @@ fn write_log_event(log: &mut std::fs::File, event: &ProgressEvent) {
             id,
             summary,
             highlights,
+            details,
         } => {
             let _ = writeln!(log, "[agent-review] round={} id={} {}", round, id, summary);
+            let _ = writeln!(log, "[agent-review] details:\n{}", details);
             for h in highlights {
                 let _ = writeln!(
                     log,
@@ -543,6 +555,9 @@ fn render_reviewing<'a>(progress: &'a ProgressState, spinner: &'static str) -> P
             lines.push(Line::from(format!("  -> {}", review.summary)));
             for h in &review.highlights {
                 lines.push(Line::from(format!("     {}", h)));
+            }
+            for detail in review.details.lines() {
+                lines.push(Line::from(format!("     {}", detail)));
             }
         }
     }

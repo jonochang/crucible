@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.14 - 2026-03-06
+
+- Added `--debug` flag to write deep diagnostics to `crucible.log` (prompts + raw agent I/O).
+- Expanded live agent output to include full narrative/details while rounds are running.
+- Added final analysis markdown to the report model and CLI/TUI rendering.
+- Added timeout guards across reviewer/judge phases to prevent finalize hangs.
+
 ## 0.1.13 - 2026-03-06
 
 - Release cut for the FINDINGS.md implementation wave.

@@ -7,9 +7,9 @@ use crate::report::{
     CanonicalIssue, ConsensusMap, ConsensusStatus, EvidenceAnchor, FinalActionPlan, Finding,
     FindingKey, LineSpan, RawFinding, Severity,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub struct Coordinator {
     registry: PluginRegistry,
@@ -133,6 +133,7 @@ impl Coordinator {
                     round,
                     &diff_chunks,
                     &prior_round_findings,
+                    self.cfg.coordinator.agent_timeout_secs,
                 )
                 .await
                 {
@@ -153,12 +154,14 @@ impl Coordinator {
                 };
                 self.consensus.ingest_round(&output.findings, round, id, &ctx.diff);
                 round_findings.insert(id.to_string(), output.findings.clone());
-                let (summary, highlights) = summarize_agent_output(&output, using_chunking);
+                let (summary, highlights, details) =
+                    summarize_agent_output(&output, using_chunking);
                 self.emit(ProgressEvent::AgentReview {
                     round,
                     id: id.to_string(),
                     summary,
                     highlights,
+                    details,
                 });
                 let elapsed = started_at
                     .remove(id)
@@ -185,9 +188,12 @@ impl Coordinator {
                 .count();
             if total_rounds > 1 && round < total_rounds {
                 let judge_decision = self
-                    .registry
-                    .judge
-                    .judge_convergence(&agent_ctx, round, &current_findings)
+                    .run_with_timeout(
+                        self.registry
+                            .judge
+                            .judge_convergence(&agent_ctx, round, &current_findings),
+                        "judge_convergence",
+                    )
                     .await;
                 let (verdict, rationale) = if let Ok(decision) = judge_decision {
                     (decision.verdict, decision.rationale)
@@ -237,7 +243,13 @@ impl Coordinator {
         let findings = self.consensus.all_findings();
         let mut issues = build_canonical_issues(&findings);
         if self.cfg.coordinator.enable_structurizer {
-            if let Ok(structured) = self.registry.judge.structurize_issues(&agent_ctx, &findings).await {
+            if let Ok(structured) = self
+                .run_with_timeout(
+                    self.registry.judge.structurize_issues(&agent_ctx, &findings),
+                    "structurize_issues",
+                )
+                .await
+            {
                 if !structured.is_empty() {
                     issues = merge_structured_issues(issues, structured);
                 }
@@ -250,7 +262,12 @@ impl Coordinator {
             phase: "finalize".to_string(),
         });
         let auto_fix = if findings.iter().any(|f| f.severity >= Severity::Warning) {
-            Some(self.registry.judge.summarize(&agent_ctx, &findings).await?)
+            self.run_with_timeout(
+                self.registry.judge.summarize(&agent_ctx, &findings),
+                "final_summarize",
+            )
+            .await
+            .ok()
         } else {
             None
         };
@@ -258,9 +275,13 @@ impl Coordinator {
             self.emit(ProgressEvent::AutoFixReady);
         }
 
+        let final_analysis = render_final_analysis_markdown(&issues, &action_plan);
         let report = crate::report::ReviewReport::from_findings(
             &findings,
             issues,
+            Some(render_analysis_markdown(&focus)),
+            Some(render_system_context_markdown(ctx)),
+            Some(final_analysis),
             &self.cfg.verdict,
             self.consensus.consensus_map(),
             auto_fix,
@@ -277,6 +298,26 @@ impl Coordinator {
     fn emit(&self, event: ProgressEvent) {
         if let Some(tx) = &self.progress {
             let _ = tx.send(event);
+        }
+    }
+
+    async fn run_with_timeout<T>(
+        &self,
+        fut: impl std::future::Future<Output = Result<T>>,
+        label: &str,
+    ) -> Result<T> {
+        match tokio::time::timeout(
+            Duration::from_secs(self.cfg.coordinator.agent_timeout_secs.max(1)),
+            fut,
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(anyhow!(
+                "{} timed out after {}s",
+                label,
+                self.cfg.coordinator.agent_timeout_secs
+            )),
         }
     }
 }
@@ -383,6 +424,57 @@ fn render_system_context_markdown(ctx: &ReviewContext) -> String {
     out
 }
 
+fn render_final_analysis_markdown(
+    issues: &[CanonicalIssue],
+    action_plan: &FinalActionPlan,
+) -> String {
+    let mut out = String::from("## Final Analysis\n\n");
+    let critical = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Critical)
+        .count();
+    let warning = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Warning)
+        .count();
+    let info = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Info)
+        .count();
+    out.push_str(&format!(
+        "- Issues: {} (Critical: {}, Warning: {}, Info: {})\n",
+        issues.len(),
+        critical,
+        warning,
+        info
+    ));
+    out.push_str("\n### Top Issues\n");
+    if issues.is_empty() {
+        out.push_str("- No issues found.\n");
+    } else {
+        for issue in issues.iter().take(10) {
+            let loc = match (&issue.file, issue.line_start) {
+                (Some(file), Some(line)) => format!("{}:{}", file.display(), line),
+                (Some(file), None) => file.display().to_string(),
+                _ => "<unknown>".to_string(),
+            };
+            out.push_str(&format!(
+                "- [{:?}] {} `{}`\n",
+                issue.severity, issue.title, loc
+            ));
+        }
+    }
+    out.push_str("\n### Action Plan\n");
+    if action_plan.prioritized_steps.is_empty() {
+        out.push_str("- No blocking actions.\n");
+    } else {
+        for step in &action_plan.prioritized_steps {
+            out.push_str(&format!("- {}\n", step));
+        }
+    }
+    out
+}
+
 fn format_round_synthesis(round: u8, findings: &HashMap<String, Vec<RawFinding>>) -> String {
     let mut out = format!("Round {round} prior reviewer findings:\n");
     let mut ids = findings.keys().cloned().collect::<Vec<_>>();
@@ -416,6 +508,7 @@ async fn run_agent_for_round(
     round: u8,
     diff_chunks: &[String],
     prior_round_findings: &HashMap<String, Vec<RawFinding>>,
+    timeout_secs: u64,
 ) -> Result<AgentReviewOutput> {
     let mut all_findings = Vec::new();
     let mut narratives = Vec::new();
@@ -423,12 +516,22 @@ async fn run_agent_for_round(
         let mut chunk_ctx = agent_ctx.clone();
         chunk_ctx.diff = chunk.clone();
         let output = if round == 1 {
-            agent.analyze(&chunk_ctx).await?
+            tokio::time::timeout(
+                Duration::from_secs(timeout_secs.max(1)),
+                agent.analyze(&chunk_ctx),
+            )
+            .await
+            .map_err(|_| anyhow!("agent round-1 review timed out after {}s", timeout_secs))??
         } else {
             let synthesis = CrossPollinationSynthesis {
                 summary: format_round_synthesis(round - 1, prior_round_findings),
             };
-            agent.debate(&chunk_ctx, round, &synthesis).await?
+            tokio::time::timeout(
+                Duration::from_secs(timeout_secs.max(1)),
+                agent.debate(&chunk_ctx, round, &synthesis),
+            )
+            .await
+            .map_err(|_| anyhow!("agent debate timed out after {}s", timeout_secs))??
         };
         if !output.narrative.trim().is_empty() {
             narratives.push(output.narrative.trim().to_string());
@@ -537,7 +640,11 @@ mod tests {
 fn summarize_agent_output(
     output: &AgentReviewOutput,
     using_chunking: bool,
-) -> (String, Vec<crate::progress::AgentFindingPreview>) {
+) -> (
+    String,
+    Vec<crate::progress::AgentFindingPreview>,
+    String,
+) {
     let critical = output
         .findings
         .iter()
@@ -595,7 +702,39 @@ fn summarize_agent_output(
         })
         .collect();
 
-    (summary, highlights)
+    let mut details = String::new();
+    let narrative = output.narrative.trim();
+    if !narrative.is_empty() {
+        details.push_str("Narrative:\n");
+        details.push_str(narrative);
+        details.push_str("\n\n");
+    }
+    if output.findings.is_empty() {
+        details.push_str("Findings: none");
+    } else {
+        details.push_str("Findings:\n");
+        for finding in &output.findings {
+            let loc = match (&finding.file, finding.line_start, finding.line_end) {
+                (Some(file), Some(start), Some(end)) if start != end => {
+                    format!("{}:{}-{}", file.display(), start, end)
+                }
+                (Some(file), Some(start), _) => format!("{}:{}", file.display(), start),
+                (Some(file), None, _) => file.display().to_string(),
+                _ => "<unknown>".to_string(),
+            };
+            details.push_str(&format!(
+                "- [{:?}] {} {}\n",
+                finding.severity, loc, finding.message
+            ));
+            if let Some(description) = &finding.description {
+                if !description.trim().is_empty() {
+                    details.push_str(&format!("  description: {}\n", description.trim()));
+                }
+            }
+        }
+    }
+
+    (summary, highlights, details)
 }
 
 #[derive(Debug, Clone, Default)]

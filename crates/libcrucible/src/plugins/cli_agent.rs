@@ -7,8 +7,12 @@ use crate::report::{
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone)]
 pub struct CliAgentPlugin {
@@ -19,9 +23,19 @@ pub struct CliAgentPlugin {
 }
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
+static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
+static DEBUG_FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
 
 pub fn set_verbose(enabled: bool) {
     VERBOSE.store(enabled, Ordering::Relaxed);
+}
+
+pub fn set_debug_log(path: &Path) -> Result<()> {
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    let _ = DEBUG_FILE.set(Mutex::new(file));
+    DEBUG_ENABLED.store(true, Ordering::Relaxed);
+    debug_log_line("debug logging enabled");
+    Ok(())
 }
 
 impl CliAgentPlugin {
@@ -37,6 +51,12 @@ impl CliAgentPlugin {
     fn run_cli<T: for<'de> Deserialize<'de>>(&self, system: String, user: String) -> Result<T> {
         let is_claude = self.command == "claude";
         let is_gemini = self.command == "gemini";
+        debug_log_line(&format!(
+            "[{}] invoking {} {:?}",
+            self.id, self.command, self.args
+        ));
+        debug_log_line(&format!("[{}] system prompt:\n{}", self.id, system));
+        debug_log_line(&format!("[{}] user prompt:\n{}", self.id, user));
         let prompt = if is_claude {
             user
         } else if is_gemini {
@@ -86,6 +106,11 @@ impl CliAgentPlugin {
 
         let output = child.wait_with_output().context("wait for CLI output")?;
         if !output.status.success() {
+            debug_log_line(&format!(
+                "[{}] command failed with stderr:\n{}",
+                self.id,
+                String::from_utf8_lossy(&output.stderr)
+            ));
             return Err(anyhow!(
                 "{} failed: {}",
                 self.command,
@@ -95,6 +120,10 @@ impl CliAgentPlugin {
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        debug_log_line(&format!("[{}] stdout:\n{}", self.id, stdout));
+        if !stderr.trim().is_empty() {
+            debug_log_line(&format!("[{}] stderr:\n{}", self.id, stderr));
+        }
         if is_verbose() {
             eprintln!(
                 "crucible: {} raw stdout:\n{}",
@@ -146,12 +175,17 @@ impl CliAgentPlugin {
                     parsed
                 } else {
                     let snippet = truncate(&stdout, 2000);
+                    debug_log_line(&format!(
+                        "[{}] parse failure: {}\nstdout:\n{}",
+                        self.id, err, snippet
+                    ));
                     return Err(anyhow!(
                         "parse JSON from CLI failed: {err}\nstdout (truncated):\n{snippet}\nrun with --verbose to include raw stderr"
                     ));
                 }
             }
         };
+        debug_log_line(&format!("[{}] parsed response successfully", self.id));
         Ok(parsed)
     }
 
@@ -222,6 +256,19 @@ fn reviewer_focus_for_agent(id: &str) -> &'static str {
 
 fn is_verbose() -> bool {
     VERBOSE.load(Ordering::Relaxed)
+}
+
+fn debug_log_line(message: &str) {
+    if !DEBUG_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(lock) = DEBUG_FILE.get() else {
+        return;
+    };
+    if let Ok(mut file) = lock.lock() {
+        let _ = writeln!(file, "{}", message);
+        let _ = file.flush();
+    }
 }
 
 fn parse_json_from_mixed<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T> {

@@ -9,6 +9,12 @@ pub struct ReviewReport {
     pub findings: Vec<Finding>,
     #[serde(default)]
     pub issues: Vec<CanonicalIssue>,
+    #[serde(default)]
+    pub analysis_markdown: Option<String>,
+    #[serde(default)]
+    pub system_context_markdown: Option<String>,
+    #[serde(default)]
+    pub final_analysis_markdown: Option<String>,
     pub consensus_map: ConsensusMap,
     pub auto_fix: Option<AutoFix>,
     #[serde(default)]
@@ -22,6 +28,9 @@ impl ReviewReport {
     pub fn from_findings(
         findings: &[Finding],
         issues: Vec<CanonicalIssue>,
+        analysis_markdown: Option<String>,
+        system_context_markdown: Option<String>,
+        final_analysis_markdown: Option<String>,
         cfg: &crate::config::VerdictConfig,
         consensus: ConsensusMap,
         auto_fix: Option<AutoFix>,
@@ -33,6 +42,9 @@ impl ReviewReport {
             verdict,
             findings: findings.to_vec(),
             issues,
+            analysis_markdown,
+            system_context_markdown,
+            final_analysis_markdown,
             consensus_map: consensus,
             auto_fix,
             final_action_plan,

@@ -181,7 +181,7 @@ For auto-fix requests, agents must return:
 Runs a multi-agent review of your working tree diff vs `HEAD`.
 
 ```bash
-crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [--hook] [--json] [--verbose] [--interactive] [--reviewer <id>] [--max-rounds <n>] [--export-issues <path>]
+crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [--hook] [--json] [--verbose] [--debug] [--interactive] [--reviewer <id>] [--max-rounds <n>] [--export-issues <path>]
 ```
 
 Behavior:
@@ -195,6 +195,7 @@ Behavior:
 - `--json` prints the full report as JSON (no TUI).
 - `--hook` sets the exit code based on the verdict (see Exit Codes).
 - `--verbose` streams agent stdout/stderr to help debug CLI integrations.
+- `--debug` writes deep debug traces (prompts, raw agent I/O, orchestration transitions) to `crucible.log`.
 - `--reviewer <id>` constrains review/analyzer/judge to one reviewer.
 - `--max-rounds <n>` overrides configured review rounds.
 - `--export-issues <path>` writes a deduplicated issue list with file/line locations and reviewers (`.json` or `.md`).

@@ -25,6 +25,8 @@ pub struct ReviewArgs {
     pub export_issues: Option<PathBuf>,
     #[arg(long, help = "Enable verbose CLI agent logging")]
     pub verbose: bool,
+    #[arg(long, help = "Enable debug logging to crucible.log")]
+    pub debug: bool,
     #[arg(long, help = "Keep TUI open after completion; default is auto-exit")]
     pub interactive: bool,
     #[arg(long, help = "Run review with a single reviewer id (e.g. claude-code)")]
@@ -52,6 +54,12 @@ pub struct ReviewArgs {
 }
 
 pub async fn run(args: ReviewArgs) -> Result<()> {
+    if args.debug {
+        let path = std::env::current_dir()?.join("crucible.log");
+        std::fs::write(&path, b"")?;
+        libcrucible::plugins::set_debug_log(&path)?;
+        eprintln!("Debug logging enabled: {}", path.display());
+    }
     if args.verbose {
         libcrucible::plugins::set_verbose(true);
     }
@@ -321,6 +329,10 @@ fn print_report(report: &ReviewReport, issues: &[IssueRow]) {
             loc,
             f.message
         );
+    }
+
+    if let Some(final_analysis) = &report.final_analysis_markdown {
+        println!("\nFinal Analysis:\n{}", final_analysis);
     }
 
     if let Some(plan) = &report.final_action_plan {
@@ -620,8 +632,10 @@ fn emit_progress(event: &ProgressEvent) {
             id,
             summary,
             highlights,
+            details,
         } => {
             eprintln!("[agent-review] round={} id={} {}", round, id, summary);
+            eprintln!("[agent-review] details:\n{}", details);
             for h in highlights {
                 eprintln!(
                     "[agent-review]   [{}] {} {}",
@@ -769,8 +783,10 @@ fn write_log_event(log: &Arc<Mutex<std::fs::File>>, event: &ProgressEvent) -> Re
             id,
             summary,
             highlights,
+            details,
         } => {
             writeln!(file, "[agent-review] round={} id={} {}", round, id, summary)?;
+            writeln!(file, "[agent-review] details:\n{}", details)?;
             for h in highlights {
                 writeln!(
                     file,
@@ -933,6 +949,9 @@ mod tests {
         let report = ReviewReport::from_findings(
             &findings,
             Vec::new(),
+            None,
+            None,
+            None,
             &VerdictConfig {
                 block_on: "Critical".to_string(),
             },
