@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use libcrucible::config::CrucibleConfig;
 use libcrucible::progress::{ConvergenceVerdict, ProgressEvent, ReviewerState};
-use libcrucible::report::{ReviewReport, Severity, Verdict};
+use libcrucible::report::{CanonicalIssue, ReviewReport, Severity, Verdict};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -292,9 +292,13 @@ fn print_report(report: &ReviewReport, issues: &[IssueRow]) {
             idx + 1,
             format_severity(&issue.severity),
             issue.location,
-            issue.message,
+            issue.title,
             issue.raised_by.join(", ")
         );
+        println!("      {}", issue.description);
+        if let Some(fix) = &issue.suggested_fix {
+            println!("      fix: {}", fix);
+        }
     }
 
     println!(
@@ -317,6 +321,23 @@ fn print_report(report: &ReviewReport, issues: &[IssueRow]) {
             loc,
             f.message
         );
+    }
+
+    if let Some(plan) = &report.final_action_plan {
+        println!("\nAction Plan:");
+        for step in &plan.prioritized_steps {
+            println!("  - {}", step);
+        }
+        if !plan.quick_wins.is_empty() {
+            println!("Quick Wins:");
+            for step in &plan.quick_wins {
+                println!("  - {}", step);
+            }
+        }
+    }
+
+    if let Some(comment) = &report.pr_comment_markdown {
+        println!("\nPR Comment Artifact:\n{}", comment);
     }
 
     if report.auto_fix.is_some() {
@@ -342,15 +363,23 @@ fn format_severity(sev: &libcrucible::report::Severity) -> &'static str {
 #[derive(Debug, Clone)]
 struct IssueRow {
     severity: Severity,
+    category: Option<String>,
     file: Option<String>,
     line_start: Option<u32>,
     line_end: Option<u32>,
     location: String,
-    message: String,
+    title: String,
+    description: String,
+    suggested_fix: Option<String>,
     raised_by: Vec<String>,
+    evidence: Vec<serde_json::Value>,
 }
 
 fn build_issue_list(report: &ReviewReport) -> Vec<IssueRow> {
+    if !report.issues.is_empty() {
+        return build_issue_rows_from_canonical(&report.issues);
+    }
+
     struct Group {
         raised_by: BTreeSet<String>,
         severity: Severity,
@@ -410,12 +439,16 @@ fn build_issue_list(report: &ReviewReport) -> Vec<IssueRow> {
                 };
                 IssueRow {
                     severity: group.severity,
+                    category: None,
                     file: group.file.clone(),
                     line_start: group.line_start,
                     line_end: group.line_end,
                     location,
-                    message: group.message,
+                    title: group.message.clone(),
+                    description: group.message,
+                    suggested_fix: None,
                     raised_by: group.raised_by.into_iter().collect(),
+                    evidence: Vec::new(),
                 }
             },
         )
@@ -426,9 +459,49 @@ fn build_issue_list(report: &ReviewReport) -> Vec<IssueRow> {
         let sb = severity_rank(&b.severity);
         sb.cmp(&sa)
             .then(a.location.cmp(&b.location))
-            .then(a.message.cmp(&b.message))
+            .then(a.title.cmp(&b.title))
     });
     issues
+}
+
+fn build_issue_rows_from_canonical(issues: &[CanonicalIssue]) -> Vec<IssueRow> {
+    let mut rows = issues
+        .iter()
+        .map(|issue| {
+            let file = issue.file.as_ref().map(|p| p.display().to_string());
+            let location = match (&file, issue.line_start, issue.line_end) {
+                (Some(f), Some(s), Some(e)) if s != e => format!("{f}:{s}-{e}"),
+                (Some(f), Some(s), _) => format!("{f}:{s}"),
+                (Some(f), None, _) => f.clone(),
+                _ => "<unknown>".to_string(),
+            };
+            IssueRow {
+                severity: issue.severity.clone(),
+                category: Some(issue.category.clone()),
+                file,
+                line_start: issue.line_start,
+                line_end: issue.line_end,
+                location,
+                title: issue.title.clone(),
+                description: issue.description.clone(),
+                suggested_fix: issue.suggested_fix.clone(),
+                raised_by: issue.raised_by.clone(),
+                evidence: issue
+                    .evidence
+                    .iter()
+                    .map(|e| serde_json::json!({"location": e.location, "quote": e.quote}))
+                    .collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| {
+        let sa = severity_rank(&a.severity);
+        let sb = severity_rank(&b.severity);
+        sb.cmp(&sa)
+            .then(a.location.cmp(&b.location))
+            .then(a.title.cmp(&b.title))
+    });
+    rows
 }
 
 fn normalize_dedup_text(value: &str) -> String {
@@ -462,9 +535,16 @@ fn export_issues(path: &std::path::Path, issues: &[IssueRow]) -> Result<()> {
                 idx + 1,
                 format_severity(&i.severity),
                 i.location,
-                i.message
+                i.title
             ));
             out.push_str(&format!("   - raised_by: {}\n", i.raised_by.join(", ")));
+            out.push_str(&format!("   - description: {}\n", i.description));
+            if let Some(category) = &i.category {
+                out.push_str(&format!("   - category: {}\n", category));
+            }
+            if let Some(fix) = &i.suggested_fix {
+                out.push_str(&format!("   - suggested_fix: {}\n", fix));
+            }
         }
         std::fs::write(path, out)?;
         return Ok(());
@@ -476,12 +556,16 @@ fn export_issues(path: &std::path::Path, issues: &[IssueRow]) -> Result<()> {
             .map(|i| {
                 serde_json::json!({
                     "severity": format_severity(&i.severity),
+                    "category": i.category,
                     "file": i.file,
                     "line_start": i.line_start,
                     "line_end": i.line_end,
                     "location": i.location,
-                    "message": i.message,
-                    "raised_by": i.raised_by
+                    "title": i.title,
+                    "description": i.description,
+                    "suggested_fix": i.suggested_fix,
+                    "raised_by": i.raised_by,
+                    "evidence": i.evidence,
                 })
             })
             .collect::<Vec<_>>(),
@@ -757,8 +841,11 @@ fn render_report_json(report: &ReviewReport) -> String {
             serde_json::to_string_pretty(&serde_json::json!({
                 "verdict": report.verdict,
                 "findings": report.findings,
+                "issues": report.issues,
                 "consensus": consensus,
                 "auto_fix": report.auto_fix,
+                "final_action_plan": report.final_action_plan,
+                "pr_comment_markdown": report.pr_comment_markdown,
                 "session_id": report.session_id
             }))
             .unwrap_or_else(|_| "{}".to_string())
@@ -815,28 +902,43 @@ mod tests {
             Finding {
                 agent: "claude-code".to_string(),
                 severity: Severity::Warning,
+                confidence: libcrucible::report::Confidence::High,
                 file: Some(PathBuf::from("src/main.rs")),
                 span: Some(LineSpan { start: 10, end: 10 }),
                 message: "  Missing   error handling ".to_string(),
+                category: None,
+                title: None,
+                description: None,
+                suggested_fix: None,
+                evidence: Vec::new(),
                 round: 1,
                 raised_by: vec!["claude-code".to_string()],
             },
             Finding {
                 agent: "codex".to_string(),
                 severity: Severity::Warning,
+                confidence: libcrucible::report::Confidence::High,
                 file: Some(PathBuf::from("SRC/main.rs")),
                 span: Some(LineSpan { start: 10, end: 10 }),
                 message: "missing error handling".to_string(),
+                category: None,
+                title: None,
+                description: None,
+                suggested_fix: None,
+                evidence: Vec::new(),
                 round: 1,
                 raised_by: vec!["codex".to_string()],
             },
         ];
         let report = ReviewReport::from_findings(
             &findings,
+            Vec::new(),
             &VerdictConfig {
                 block_on: "Critical".to_string(),
             },
             ConsensusMap::default(),
+            None,
+            None,
             None,
         );
 

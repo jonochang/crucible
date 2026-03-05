@@ -1,7 +1,9 @@
 use crate::analysis::{AgentContext, FocusAreas};
 use crate::config::CliPluginConfig;
-use crate::plugin::{AgentPlugin, AgentReviewOutput, FocusAnalyzer};
-use crate::report::{AutoFix, Confidence, Finding, RawFinding, Severity};
+use crate::plugin::{AgentPlugin, AgentReviewOutput, ConvergenceDecision, FocusAnalyzer};
+use crate::report::{
+    AutoFix, CanonicalIssue, Confidence, EvidenceAnchor, Finding, RawFinding, Severity,
+};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -153,7 +155,7 @@ impl CliAgentPlugin {
         Ok(parsed)
     }
 
-    fn build_context_sections(&self, ctx: &AgentContext) -> (String, String, String) {
+    fn build_context_sections(&self, ctx: &AgentContext) -> (String, String, String, String) {
         let focus = ctx
             .focus
             .as_ref()
@@ -161,21 +163,25 @@ impl CliAgentPlugin {
             .unwrap_or_else(|| "null".to_string());
         let references = serde_json::to_string(&ctx.gathered.references).unwrap_or_default();
         let history = serde_json::to_string(&ctx.gathered.history).unwrap_or_default();
-        (focus, references, history)
+        let prechecks = serde_json::to_string(&ctx.gathered.prechecks).unwrap_or_default();
+        (focus, references, history, prechecks)
     }
 
     fn review_prompt_round1(&self, ctx: &AgentContext) -> (String, String) {
-        let (focus, references, history) = self.build_context_sections(ctx);
+        let (focus, references, history, prechecks) = self.build_context_sections(ctx);
+        let role_focus = reviewer_focus_for_agent(&self.id);
         let system = format!(
             "You are a {} performing an exhaustive round-1 code review.\n\
             You MUST review all changed files/functions and assess correctness, security, performance, error handling, edge cases, and maintainability.\n\
+            Your primary lens is: {}.\n\
+            Every finding MUST include direct evidence with exact code location and short quote snippets.\n\
             Respond ONLY with valid JSON matching this schema:\n\
-            {{\n  \"narrative\": \"<concise analysis for terminal display>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"message\": \"<concise actionable issue>\",\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
-            self.persona
+            {{\n  \"narrative\": \"<concise analysis for terminal display>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"category\": \"<correctness|security|performance|maintainability|testing|style>\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"title\": \"<short issue title>\",\n    \"description\": \"<detailed issue description>\",\n    \"message\": \"<concise actionable issue>\",\n    \"suggested_fix\": \"<recommended fix or null>\",\n    \"evidence\": [{{\"location\":\"<path:line>\",\"quote\":\"<short code excerpt>\"}}],\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
+            self.persona, role_focus
         );
         let user = format!(
-            "Round: 1\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n\nDiff to review:\n{}",
-            focus, references, history, ctx.diff
+            "Round: 1\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nDiff to review:\n{}",
+            focus, references, history, prechecks, ctx.diff
         );
         (system, user)
     }
@@ -186,19 +192,31 @@ impl CliAgentPlugin {
         round: u8,
         synthesis: &crate::coordinator::CrossPollinationSynthesis,
     ) -> (String, String) {
-        let (focus, references, history) = self.build_context_sections(ctx);
+        let (focus, references, history, prechecks) = self.build_context_sections(ctx);
+        let role_focus = reviewer_focus_for_agent(&self.id);
         let system = format!(
             "You are a {} performing adversarial round-{} review.\n\
             You MUST use only prior-round discussion below (no same-round leakage), explicitly agree/disagree with prior points, and call out missed issues if any.\n\
+            Your primary lens is: {}.\n\
+            Every finding MUST include direct evidence with exact code location and short quote snippets.\n\
             Respond ONLY with valid JSON matching this schema:\n\
-            {{\n  \"narrative\": \"<concise agreement/disagreement summary>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"message\": \"<concise actionable issue>\",\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
-            self.persona, round
+            {{\n  \"narrative\": \"<concise agreement/disagreement summary>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"category\": \"<correctness|security|performance|maintainability|testing|style>\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"title\": \"<short issue title>\",\n    \"description\": \"<detailed issue description>\",\n    \"message\": \"<concise actionable issue>\",\n    \"suggested_fix\": \"<recommended fix or null>\",\n    \"evidence\": [{{\"location\":\"<path:line>\",\"quote\":\"<short code excerpt>\"}}],\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
+            self.persona, round, role_focus
         );
         let user = format!(
-            "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n\nDiff to review:\n{}",
-            round, synthesis.summary, focus, references, history, ctx.diff
+            "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nDiff to review:\n{}",
+            round, synthesis.summary, focus, references, history, prechecks, ctx.diff
         );
         (system, user)
+    }
+}
+
+fn reviewer_focus_for_agent(id: &str) -> &'static str {
+    match id {
+        "claude-code" => "Correctness, security, and invariants",
+        "codex" => "Architecture, maintainability, and API consistency",
+        "gemini" => "Performance, scalability, and edge-cases",
+        _ => "General code quality",
     }
 }
 
@@ -372,12 +390,58 @@ impl AgentPlugin for CliAgentPlugin {
             explanation: resp.explanation,
         })
     }
+
+    async fn judge_convergence(
+        &self,
+        ctx: &AgentContext,
+        round: u8,
+        findings: &[Finding],
+    ) -> Result<ConvergenceDecision> {
+        let system = "You are a strict convergence judge for multi-agent code review.\n\
+Respond ONLY with valid JSON: {\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}.\n\
+Use CONVERGED only when there are no unresolved material disagreements and no net-new high-severity risk requiring another round."
+            .to_string();
+        let user = format!(
+            "Round: {round}\nFindings so far:\n{}\n\nDiff:\n{}",
+            serde_json::to_string(findings).unwrap_or_default(),
+            ctx.diff
+        );
+        let resp: ConvergenceResponse = self.run_cli(system, user)?;
+        let verdict = match resp.verdict.as_str() {
+            "CONVERGED" => crate::progress::ConvergenceVerdict::Converged,
+            _ => crate::progress::ConvergenceVerdict::NotConverged,
+        };
+        Ok(ConvergenceDecision {
+            verdict,
+            rationale: resp.rationale,
+        })
+    }
+
+    async fn structurize_issues(
+        &self,
+        _ctx: &AgentContext,
+        findings: &[Finding],
+    ) -> Result<Vec<CanonicalIssue>> {
+        let system = "You are an issue structurizer.\n\
+Respond ONLY with valid JSON array where each item contains: severity, category, file, line_start, line_end, title, description, suggested_fix, raised_by."
+            .to_string();
+        let user = format!(
+            "Normalize these findings into canonical issues (merge duplicates):\n{}",
+            serde_json::to_string(findings).unwrap_or_default()
+        );
+        let resp: Vec<CanonicalIssueResponse> = self.run_cli(system, user)?;
+        Ok(resp.into_iter().map(CanonicalIssue::from).collect())
+    }
 }
 
 #[async_trait]
 impl FocusAnalyzer for CliAgentPlugin {
     async fn analyze_focus(&self, ctx: &AgentContext) -> Result<FocusAreas> {
-        let system = "You are a senior architect producing analyzer context for code review.\nOutput ONLY valid JSON matching this schema:\n{\n  \"summary\": \"<what changed, architecture impact, and purpose>\",\n  \"focus_items\": [{ \"area\": \"<review area>\", \"rationale\": \"<why this needs focus>\" }],\n  \"trade_offs\": [\"<trade-off or risk>\"]\n}\nThe summary must be markdown-ready text.".to_string();
+        let system = "You are a senior architect producing analyzer context for code review.\n\
+Output ONLY valid JSON matching this schema:\n\
+{\n  \"summary\": \"<what changed, architecture impact, and purpose>\",\n  \"focus_items\": [{ \"area\": \"<review area>\", \"rationale\": \"<why this needs focus>\" }],\n  \"trade_offs\": [\"<trade-off or risk>\"],\n  \"affected_modules\": [\"<module/component impacted>\"],\n  \"call_chain\": [\"<entrypoint -> downstream path>\"],\n  \"design_patterns\": [\"<pattern used or violated>\"],\n  \"reviewer_checklist\": [\"<targeted checklist item for reviewers>\"]\n}\n\
+The summary must be markdown-ready text."
+            .to_string();
         let user = format!("Diff to review:\n{}", ctx.diff);
         let resp: FocusAreas = self.run_cli(system, user)?;
         Ok(resp)
@@ -395,10 +459,20 @@ struct FindingsResponse {
 #[derive(Debug, Deserialize)]
 struct RawFindingResponse {
     severity: String,
+    #[serde(default)]
+    category: Option<String>,
     file: Option<String>,
     line_start: Option<u32>,
     line_end: Option<u32>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
     message: String,
+    #[serde(default)]
+    suggested_fix: Option<String>,
+    #[serde(default)]
+    evidence: Vec<EvidenceAnchor>,
     confidence: String,
 }
 
@@ -419,6 +493,11 @@ impl From<RawFindingResponse> for RawFinding {
                 "Medium" => Confidence::Medium,
                 _ => Confidence::Low,
             },
+            category: value.category,
+            title: value.title,
+            description: value.description,
+            suggested_fix: value.suggested_fix,
+            evidence: value.evidence,
         }
     }
 }
@@ -427,6 +506,48 @@ impl From<RawFindingResponse> for RawFinding {
 struct AutoFixResponse {
     unified_diff: String,
     explanation: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConvergenceResponse {
+    verdict: String,
+    rationale: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CanonicalIssueResponse {
+    severity: String,
+    category: String,
+    file: Option<String>,
+    line_start: Option<u32>,
+    line_end: Option<u32>,
+    title: String,
+    description: String,
+    #[serde(default)]
+    suggested_fix: Option<String>,
+    #[serde(default)]
+    raised_by: Vec<String>,
+}
+
+impl From<CanonicalIssueResponse> for CanonicalIssue {
+    fn from(value: CanonicalIssueResponse) -> Self {
+        Self {
+            severity: match value.severity.as_str() {
+                "Critical" => Severity::Critical,
+                "Warning" => Severity::Warning,
+                _ => Severity::Info,
+            },
+            category: value.category,
+            file: value.file.map(Into::into),
+            line_start: value.line_start,
+            line_end: value.line_end,
+            title: value.title,
+            description: value.description,
+            suggested_fix: value.suggested_fix,
+            raised_by: value.raised_by,
+            evidence: Vec::new(),
+        }
+    }
 }
 
 #[cfg(test)]

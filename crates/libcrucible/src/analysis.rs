@@ -6,6 +6,14 @@ pub struct FocusAreas {
     pub summary: String,
     pub focus_items: Vec<FocusItem>,
     pub trade_offs: Vec<String>,
+    #[serde(default)]
+    pub affected_modules: Vec<String>,
+    #[serde(default)]
+    pub call_chain: Vec<String>,
+    #[serde(default)]
+    pub design_patterns: Vec<String>,
+    #[serde(default)]
+    pub reviewer_checklist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

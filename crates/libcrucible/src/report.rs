@@ -7,24 +7,36 @@ use uuid::Uuid;
 pub struct ReviewReport {
     pub verdict: Verdict,
     pub findings: Vec<Finding>,
+    #[serde(default)]
+    pub issues: Vec<CanonicalIssue>,
     pub consensus_map: ConsensusMap,
     pub auto_fix: Option<AutoFix>,
+    #[serde(default)]
+    pub final_action_plan: Option<FinalActionPlan>,
+    #[serde(default)]
+    pub pr_comment_markdown: Option<String>,
     pub session_id: Uuid,
 }
 
 impl ReviewReport {
     pub fn from_findings(
         findings: &[Finding],
+        issues: Vec<CanonicalIssue>,
         cfg: &crate::config::VerdictConfig,
         consensus: ConsensusMap,
         auto_fix: Option<AutoFix>,
+        final_action_plan: Option<FinalActionPlan>,
+        pr_comment_markdown: Option<String>,
     ) -> Self {
         let verdict = Verdict::from_findings(findings, cfg);
         Self {
             verdict,
             findings: findings.to_vec(),
+            issues,
             consensus_map: consensus,
             auto_fix,
+            final_action_plan,
+            pr_comment_markdown,
             session_id: Uuid::new_v4(),
         }
     }
@@ -60,9 +72,20 @@ impl Verdict {
 pub struct Finding {
     pub agent: String,
     pub severity: Severity,
+    pub confidence: Confidence,
     pub file: Option<PathBuf>,
     pub span: Option<LineSpan>,
     pub message: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub suggested_fix: Option<String>,
+    #[serde(default)]
+    pub evidence: Vec<EvidenceAnchor>,
     pub round: u8,
     pub raised_by: Vec<String>,
 }
@@ -75,6 +98,16 @@ pub struct RawFinding {
     pub line_end: Option<u32>,
     pub message: String,
     pub confidence: Confidence,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub suggested_fix: Option<String>,
+    #[serde(default)]
+    pub evidence: Vec<EvidenceAnchor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -84,7 +117,7 @@ pub enum Severity {
     Critical,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Confidence {
     Low,
     Medium,
@@ -101,6 +134,33 @@ pub struct LineSpan {
 pub struct AutoFix {
     pub unified_diff: String,
     pub explanation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FinalActionPlan {
+    pub prioritized_steps: Vec<String>,
+    pub quick_wins: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanonicalIssue {
+    pub severity: Severity,
+    pub category: String,
+    pub file: Option<PathBuf>,
+    pub line_start: Option<u32>,
+    pub line_end: Option<u32>,
+    pub title: String,
+    pub description: String,
+    pub suggested_fix: Option<String>,
+    pub raised_by: Vec<String>,
+    #[serde(default)]
+    pub evidence: Vec<EvidenceAnchor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvidenceAnchor {
+    pub location: String,
+    pub quote: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

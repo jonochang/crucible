@@ -12,6 +12,8 @@ pub struct CrucibleConfig {
     pub coordinator: CoordinatorConfig,
     pub verdict: VerdictConfig,
     pub rate_limits: RateLimitConfig,
+    #[serde(default)]
+    pub prechecks: PrecheckConfig,
     pub plugins: PluginsConfig,
 }
 
@@ -42,6 +44,12 @@ pub struct CoordinatorConfig {
     pub quorum_threshold: f32,
     pub agent_timeout_secs: u64,
     pub devil_advocate: bool,
+    #[serde(default = "default_max_diff_lines_per_chunk")]
+    pub max_diff_lines_per_chunk: usize,
+    #[serde(default = "default_max_diff_chunks")]
+    pub max_diff_chunks: usize,
+    #[serde(default = "default_enable_structurizer")]
+    pub enable_structurizer: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +62,29 @@ pub struct RateLimitConfig {
     pub anthropic_rpm: u32,
     pub google_rpm: u32,
     pub openai_rpm: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrecheckConfig {
+    pub enabled: bool,
+    pub include_untangle: bool,
+    pub include_linters: bool,
+    pub include_type_checks: bool,
+    pub include_tests: bool,
+    pub timeout_secs: u64,
+}
+
+impl Default for PrecheckConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            include_untangle: true,
+            include_linters: true,
+            include_type_checks: true,
+            include_tests: true,
+            timeout_secs: 30,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +136,9 @@ impl Default for CrucibleConfig {
                 quorum_threshold: 0.75,
                 agent_timeout_secs: 90,
                 devil_advocate: false,
+                max_diff_lines_per_chunk: default_max_diff_lines_per_chunk(),
+                max_diff_chunks: default_max_diff_chunks(),
+                enable_structurizer: default_enable_structurizer(),
             },
             verdict: VerdictConfig {
                 block_on: "Critical".to_string(),
@@ -114,6 +148,7 @@ impl Default for CrucibleConfig {
                 google_rpm: 60,
                 openai_rpm: 60,
             },
+            prechecks: PrecheckConfig::default(),
             plugins: PluginsConfig {
                 agents: vec![
                     "claude-code".to_string(),
@@ -159,6 +194,18 @@ impl Default for CrucibleConfig {
             },
         }
     }
+}
+
+fn default_max_diff_lines_per_chunk() -> usize {
+    1200
+}
+
+fn default_max_diff_chunks() -> usize {
+    6
+}
+
+fn default_enable_structurizer() -> bool {
+    true
 }
 
 impl CrucibleConfig {

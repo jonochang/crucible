@@ -42,9 +42,12 @@ Crucible talks to these tools via stdin/stdout. Each CLI must return strict JSON
 
 - Builds a unified diff from your working tree and index.
 - Collects context in parallel: symbol references, recent commit history, and docs snippets.
+- Runs deterministic prechecks (`untangle`, linters, type checks, targeted tests) and injects results into reviewer context.
 - Runs a pre-analysis phase to generate focus areas.
 - Asks each configured agent to produce structured findings.
 - Clusters findings by location/message similarity and computes consensus.
+- Runs LLM convergence judging (`CONVERGED`/`NOT_CONVERGED`) between rounds.
+- Builds canonical issues, a prioritized action plan, and a ready-to-post PR comment artifact.
 - Optionally asks the judge agent for an auto-fix unified diff.
 - Presents results in a TUI with `[Enter]` to apply the patch.
 
@@ -89,6 +92,9 @@ max_rounds = 2
 quorum_threshold = 0.75
 agent_timeout_secs = 90
 devil_advocate = false
+max_diff_lines_per_chunk = 1200
+max_diff_chunks = 6
+enable_structurizer = true
 
 [verdict]
 block_on = "Critical"
@@ -97,6 +103,14 @@ block_on = "Critical"
 anthropic_rpm = 50
 google_rpm = 60
 openai_rpm = 60
+
+[prechecks]
+enabled = true
+include_untangle = true
+include_linters = true
+include_type_checks = true
+include_tests = true
+timeout_secs = 30
 
 [plugins]
 agents = ["claude-code", "codex", "gemini"]
@@ -139,10 +153,15 @@ Each agent is invoked with a prompt on stdin. The response **must** be valid JSO
   "findings": [
     {
       "severity": "Critical | Warning | Info",
+      "category": "<correctness|security|performance|maintainability|testing|style>",
       "file": "<relative path or null>",
       "line_start": 1,
       "line_end": 1,
+      "title": "<short issue title>",
+      "description": "<detailed issue description>",
       "message": "<concise, actionable description>",
+      "suggested_fix": "<recommended fix or null>",
+      "evidence": [{ "location": "src/lib.rs:42", "quote": "+ risky_call().unwrap()" }],
       "confidence": "High | Medium | Low"
     }
   ]
@@ -181,6 +200,21 @@ Behavior:
 - `--export-issues <path>` writes a deduplicated issue list with file/line locations and reviewers (`.json` or `.md`).
 - Progress and the final JSON report are appended to `review_report.log` in the current directory.
 - During review, Crucible streams startup header, analysis/system context, round status (with durations), convergence, and `[agent-review]` summaries.
+- Final report output includes an `Action Plan` section and a `PR Comment Artifact`.
+
+### `crucible prompt-eval`
+
+Runs a golden-set prompt evaluation harness against synthetic/recorded diffs.
+
+```bash
+crucible prompt-eval --dataset eval/golden.json --out eval/report.json [--fast]
+```
+
+Behavior:
+- Loads eval cases (`name`, `diff`, expected issue patterns).
+- Runs reviews per case and scores precision/recall against expected issues.
+- Writes a machine-readable report for regression tracking.
+- `--fast` constrains to `codex` + 1 round for cheaper smoke runs.
 
 ### `crucible hook`
 

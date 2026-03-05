@@ -4,10 +4,11 @@ use crate::context::ReviewContext;
 use crate::plugin::{AgentReviewOutput, PluginRegistry};
 use crate::progress::{ConvergenceVerdict, ProgressEvent, ReviewerState, ReviewerStatus};
 use crate::report::{
-    ConsensusMap, ConsensusStatus, Finding, FindingKey, LineSpan, RawFinding, Severity,
+    CanonicalIssue, ConsensusMap, ConsensusStatus, EvidenceAnchor, FinalActionPlan, Finding,
+    FindingKey, LineSpan, RawFinding, Severity,
 };
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 pub struct Coordinator {
@@ -71,7 +72,14 @@ impl Coordinator {
 
         let total_rounds = self.cfg.coordinator.max_rounds.max(1);
         let agent_ctx = ctx.into_agent_ctx(Some(&focus));
+        let diff_chunks = chunk_diff(
+            &ctx.diff,
+            self.cfg.coordinator.max_diff_lines_per_chunk,
+            self.cfg.coordinator.max_diff_chunks,
+        );
+        let using_chunking = diff_chunks.len() > 1;
         let mut previous_count = 0usize;
+        let mut previous_high_count = 0usize;
         let mut prior_round_findings: HashMap<String, Vec<RawFinding>> = HashMap::new();
         for round in 1..=total_rounds {
             self.snapshotter.freeze_round(round, &HashMap::new());
@@ -119,14 +127,15 @@ impl Coordinator {
                     round,
                     id: id.to_string(),
                 });
-                let output = match if round == 1 {
-                    agent.analyze(&agent_ctx).await
-                } else {
-                    let synthesis = CrossPollinationSynthesis {
-                        summary: format_round_synthesis(round - 1, &prior_round_findings),
-                    };
-                    agent.debate(&agent_ctx, round, &synthesis).await
-                } {
+                let output = match run_agent_for_round(
+                    agent.as_ref(),
+                    &agent_ctx,
+                    round,
+                    &diff_chunks,
+                    &prior_round_findings,
+                )
+                .await
+                {
                     Ok(output) => output,
                     Err(err) => {
                         update_status(&mut statuses, id, ReviewerState::Error, None);
@@ -142,9 +151,9 @@ impl Coordinator {
                         return Err(err);
                     }
                 };
-                self.consensus.ingest_round(&output.findings, round, id);
+                self.consensus.ingest_round(&output.findings, round, id, &ctx.diff);
                 round_findings.insert(id.to_string(), output.findings.clone());
-                let (summary, highlights) = summarize_agent_output(&output);
+                let (summary, highlights) = summarize_agent_output(&output, using_chunking);
                 self.emit(ProgressEvent::AgentReview {
                     round,
                     id: id.to_string(),
@@ -168,24 +177,42 @@ impl Coordinator {
             prior_round_findings = round_findings;
             self.emit(ProgressEvent::RoundDone { round });
 
-            let current_count = self.consensus.all_findings().len();
+            let current_findings = self.consensus.all_findings();
+            let current_count = current_findings.len();
+            let current_high_count = current_findings
+                .iter()
+                .filter(|f| f.severity == Severity::Critical)
+                .count();
             if total_rounds > 1 && round < total_rounds {
-                let converged = round > 1 && current_count == previous_count;
-                let verdict = if converged {
-                    ConvergenceVerdict::Converged
+                let judge_decision = self
+                    .registry
+                    .judge
+                    .judge_convergence(&agent_ctx, round, &current_findings)
+                    .await;
+                let (verdict, rationale) = if let Ok(decision) = judge_decision {
+                    (decision.verdict, decision.rationale)
                 } else {
-                    ConvergenceVerdict::NotConverged
-                };
-                let rationale = if converged {
-                    "No net-new findings compared with prior round.".to_string()
-                } else {
-                    "New findings were raised; another round required.".to_string()
+                    let converged = round > 1
+                        && current_count == previous_count
+                        && current_high_count <= previous_high_count;
+                    let verdict = if converged {
+                        ConvergenceVerdict::Converged
+                    } else {
+                        ConvergenceVerdict::NotConverged
+                    };
+                    let rationale = if converged {
+                        "No net-new findings and no increase in critical risk.".to_string()
+                    } else {
+                        "Net-new findings or unresolved high-severity issues remain.".to_string()
+                    };
+                    (verdict, rationale)
                 };
                 self.emit(ProgressEvent::ConvergenceJudgment {
                     round,
                     verdict,
                     rationale,
                 });
+                let converged = verdict == ConvergenceVerdict::Converged;
                 if converged {
                     self.emit(ProgressEvent::RoundComplete {
                         round,
@@ -198,6 +225,7 @@ impl Coordinator {
                 }
             }
             previous_count = current_count;
+            previous_high_count = current_high_count;
             self.emit(ProgressEvent::RoundComplete {
                 round,
                 total_rounds,
@@ -207,6 +235,16 @@ impl Coordinator {
             });
         }
         let findings = self.consensus.all_findings();
+        let mut issues = build_canonical_issues(&findings);
+        if self.cfg.coordinator.enable_structurizer {
+            if let Ok(structured) = self.registry.judge.structurize_issues(&agent_ctx, &findings).await {
+                if !structured.is_empty() {
+                    issues = merge_structured_issues(issues, structured);
+                }
+            }
+        }
+        let action_plan = build_action_plan(&issues);
+        let pr_comment = render_pr_comment(&issues, &action_plan);
 
         self.emit(ProgressEvent::PhaseStart {
             phase: "finalize".to_string(),
@@ -222,9 +260,12 @@ impl Coordinator {
 
         let report = crate::report::ReviewReport::from_findings(
             &findings,
+            issues,
             &self.cfg.verdict,
             self.consensus.consensus_map(),
             auto_fix,
+            Some(action_plan),
+            Some(pr_comment),
         );
         self.emit(ProgressEvent::Completed(report.clone()));
         self.emit(ProgressEvent::PhaseDone {
@@ -280,6 +321,30 @@ fn render_analysis_markdown(focus: &FocusAreas) -> String {
             out.push_str(&format!("- {}\n", tradeoff));
         }
     }
+    if !focus.affected_modules.is_empty() {
+        out.push_str("\n### Affected Modules\n");
+        for module in &focus.affected_modules {
+            out.push_str(&format!("- {}\n", module));
+        }
+    }
+    if !focus.call_chain.is_empty() {
+        out.push_str("\n### Call Chain\n");
+        for item in &focus.call_chain {
+            out.push_str(&format!("- {}\n", item));
+        }
+    }
+    if !focus.design_patterns.is_empty() {
+        out.push_str("\n### Design Patterns\n");
+        for pattern in &focus.design_patterns {
+            out.push_str(&format!("- {}\n", pattern));
+        }
+    }
+    if !focus.reviewer_checklist.is_empty() {
+        out.push_str("\n### Reviewer Checklist\n");
+        for item in &focus.reviewer_checklist {
+            out.push_str(&format!("- {}\n", item));
+        }
+    }
     out
 }
 
@@ -296,10 +361,23 @@ fn render_system_context_markdown(ctx: &ReviewContext) -> String {
         ctx.gathered.history.len()
     ));
     out.push_str(&format!("- Docs snippets: {}\n", ctx.gathered.docs.len()));
+    out.push_str(&format!(
+        "- Deterministic prechecks: {}\n",
+        ctx.gathered.prechecks.len()
+    ));
     if !ctx.changed_files.is_empty() {
         out.push_str("- Affected files:\n");
         for file in &ctx.changed_files {
             out.push_str(&format!("  - {}\n", file.display()));
+        }
+    }
+    if !ctx.gathered.prechecks.is_empty() {
+        out.push_str("- Precheck results:\n");
+        for signal in &ctx.gathered.prechecks {
+            out.push_str(&format!(
+                "  - {} [{:?}] {}\n",
+                signal.tool, signal.status, signal.summary
+            ));
         }
     }
     out
@@ -332,6 +410,71 @@ fn format_round_synthesis(round: u8, findings: &HashMap<String, Vec<RawFinding>>
     out
 }
 
+async fn run_agent_for_round(
+    agent: &dyn crate::plugin::AgentPlugin,
+    agent_ctx: &crate::analysis::AgentContext,
+    round: u8,
+    diff_chunks: &[String],
+    prior_round_findings: &HashMap<String, Vec<RawFinding>>,
+) -> Result<AgentReviewOutput> {
+    let mut all_findings = Vec::new();
+    let mut narratives = Vec::new();
+    for chunk in diff_chunks {
+        let mut chunk_ctx = agent_ctx.clone();
+        chunk_ctx.diff = chunk.clone();
+        let output = if round == 1 {
+            agent.analyze(&chunk_ctx).await?
+        } else {
+            let synthesis = CrossPollinationSynthesis {
+                summary: format_round_synthesis(round - 1, prior_round_findings),
+            };
+            agent.debate(&chunk_ctx, round, &synthesis).await?
+        };
+        if !output.narrative.trim().is_empty() {
+            narratives.push(output.narrative.trim().to_string());
+        }
+        all_findings.extend(output.findings);
+    }
+    Ok(AgentReviewOutput {
+        findings: all_findings,
+        narrative: narratives.join(" | "),
+    })
+}
+
+fn chunk_diff(diff: &str, max_lines_per_chunk: usize, max_chunks: usize) -> Vec<String> {
+    let max_lines_per_chunk = max_lines_per_chunk.max(200);
+    let max_chunks = max_chunks.max(1);
+    if diff.lines().count() <= max_lines_per_chunk {
+        return vec![diff.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_lines = 0usize;
+
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") && current_lines >= max_lines_per_chunk {
+            chunks.push(current.clone());
+            current.clear();
+            current_lines = 0;
+            if chunks.len() >= max_chunks {
+                break;
+            }
+        }
+        current.push_str(line);
+        current.push('\n');
+        current_lines += 1;
+    }
+    if chunks.len() < max_chunks && !current.trim().is_empty() {
+        chunks.push(current);
+    }
+    if chunks.is_empty() {
+        vec![diff.to_string()]
+    } else {
+        chunks
+    }
+}
+
 pub fn parse_convergence_verdict(input: &str) -> Option<ConvergenceVerdict> {
     if input.contains("NOT_CONVERGED") {
         return Some(ConvergenceVerdict::NotConverged);
@@ -344,8 +487,9 @@ pub fn parse_convergence_verdict(input: &str) -> Option<ConvergenceVerdict> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_convergence_verdict;
+    use super::{calibrate_low_confidence, chunk_diff, parse_convergence_verdict};
     use crate::progress::ConvergenceVerdict;
+    use crate::report::{Confidence, Finding, Severity};
 
     #[test]
     fn parse_convergence_token() {
@@ -359,10 +503,40 @@ mod tests {
         );
         assert_eq!(parse_convergence_verdict("unknown"), None);
     }
+
+    #[test]
+    fn chunking_splits_large_diff() {
+        let diff = "diff --git a/a.rs b/a.rs\n@@\n".to_string() + &"+x\n".repeat(600) +
+            "diff --git a/b.rs b/b.rs\n@@\n" + &"+y\n".repeat(700);
+        let chunks = chunk_diff(&diff, 500, 4);
+        assert!(chunks.len() >= 2);
+    }
+
+    #[test]
+    fn low_confidence_singleton_is_downgraded() {
+        let mut findings = vec![Finding {
+            agent: "claude-code".to_string(),
+            severity: Severity::Warning,
+            confidence: Confidence::Low,
+            file: None,
+            span: None,
+            message: "possible issue".to_string(),
+            category: None,
+            title: None,
+            description: None,
+            suggested_fix: None,
+            evidence: Vec::new(),
+            round: 1,
+            raised_by: vec!["claude-code".to_string()],
+        }];
+        calibrate_low_confidence(&mut findings);
+        assert_eq!(findings[0].severity, Severity::Info);
+    }
 }
 
 fn summarize_agent_output(
     output: &AgentReviewOutput,
+    using_chunking: bool,
 ) -> (String, Vec<crate::progress::AgentFindingPreview>) {
     let critical = output
         .findings
@@ -397,6 +571,9 @@ fn summarize_agent_output(
             summary,
             narrative.lines().next().unwrap_or_default().trim()
         );
+    }
+    if using_chunking {
+        summary = format!("{summary} | diff chunking enabled");
     }
 
     let mut ranked = output.findings.clone();
@@ -481,7 +658,7 @@ impl ConsensusTracker {
         }
     }
 
-    pub fn ingest_round(&mut self, raw: &[RawFinding], round: u8, agent_id: &str) {
+    pub fn ingest_round(&mut self, raw: &[RawFinding], round: u8, agent_id: &str, diff: &str) {
         for rf in raw {
             let span = match (rf.line_start, rf.line_end) {
                 (Some(start), Some(end)) => Some(LineSpan { start, end }),
@@ -492,12 +669,23 @@ impl ConsensusTracker {
                 .file
                 .clone()
                 .and_then(|f| span.clone().map(|s| FindingKey { file: f, span: s }));
+            let evidence = if rf.evidence.is_empty() {
+                fallback_evidence_from_diff(diff, &rf.file, rf.line_start)
+            } else {
+                rf.evidence.clone()
+            };
             let finding = Finding {
                 agent: agent_id.to_string(),
                 severity: rf.severity.clone(),
+                confidence: rf.confidence.clone(),
                 file: rf.file.clone(),
                 span,
                 message: rf.message.clone(),
+                category: rf.category.clone(),
+                title: rf.title.clone(),
+                description: rf.description.clone(),
+                suggested_fix: rf.suggested_fix.clone(),
+                evidence,
                 round,
                 raised_by: vec![agent_id.to_string()],
             };
@@ -574,6 +762,7 @@ impl ConsensusTracker {
             .flat_map(|state| state.findings.clone())
             .collect::<Vec<_>>();
         all.extend(self.loose.clone());
+        calibrate_low_confidence(&mut all);
         all
     }
 }
@@ -618,6 +807,261 @@ fn message_similar(a: &str, b: &str) -> bool {
     let inter = tokens_a.intersection(&tokens_b).count() as f32;
     let union = tokens_a.union(&tokens_b).count() as f32;
     inter / union >= 0.35
+}
+
+fn fallback_evidence_from_diff(
+    diff: &str,
+    file: &Option<std::path::PathBuf>,
+    line_start: Option<u32>,
+) -> Vec<EvidenceAnchor> {
+    let (Some(file), Some(line)) = (file.as_ref(), line_start) else {
+        return Vec::new();
+    };
+    let mut capture = None;
+    let target = format!("+++ b/{}", file.display());
+    for raw in diff.lines() {
+        if raw == target {
+            capture = Some(String::new());
+            continue;
+        }
+        if raw.starts_with("diff --git ") {
+            capture = None;
+            continue;
+        }
+        if let Some(buf) = capture.as_mut() {
+            if raw.starts_with('+') || raw.starts_with('-') || raw.starts_with(' ') {
+                if !raw.starts_with("+++") && !raw.starts_with("---") {
+                    buf.push_str(raw);
+                    if buf.len() >= 180 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let quote = capture
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if quote.is_empty() {
+        return Vec::new();
+    }
+    vec![EvidenceAnchor {
+        location: format!("{}:{}", file.display(), line),
+        quote,
+    }]
+}
+
+fn calibrate_low_confidence(findings: &mut [Finding]) {
+    let mut counts: HashMap<(Option<std::path::PathBuf>, Option<u32>, String), usize> = HashMap::new();
+    for finding in findings.iter() {
+        let key = (
+            finding.file.clone(),
+            finding.span.as_ref().map(|s| s.start),
+            finding.message.to_lowercase(),
+        );
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    for finding in findings.iter_mut() {
+        let key = (
+            finding.file.clone(),
+            finding.span.as_ref().map(|s| s.start),
+            finding.message.to_lowercase(),
+        );
+        let count = counts.get(&key).copied().unwrap_or(0);
+        if count <= 1 && finding.confidence == crate::report::Confidence::Low {
+            finding.severity = match finding.severity {
+                Severity::Critical => Severity::Warning,
+                Severity::Warning => Severity::Info,
+                Severity::Info => Severity::Info,
+            };
+        }
+    }
+}
+
+fn build_canonical_issues(findings: &[Finding]) -> Vec<CanonicalIssue> {
+    let mut grouped: BTreeMap<(Option<std::path::PathBuf>, Option<u32>, String), Vec<&Finding>> =
+        BTreeMap::new();
+    for finding in findings {
+        let key = (
+            finding.file.clone(),
+            finding.span.as_ref().map(|s| s.start),
+            normalize_text(
+                finding
+                    .title
+                    .as_ref()
+                    .unwrap_or(&finding.message)
+                    .as_str(),
+            ),
+        );
+        grouped.entry(key).or_default().push(finding);
+    }
+
+    let mut issues = Vec::new();
+    for (_key, group) in grouped {
+        if group.is_empty() {
+            continue;
+        }
+        let primary = group[0];
+        let mut raised_by = group.iter().map(|f| f.agent.clone()).collect::<Vec<_>>();
+        raised_by.sort();
+        raised_by.dedup();
+        let mut evidence = Vec::new();
+        for f in &group {
+            evidence.extend(f.evidence.clone());
+        }
+        evidence.truncate(3);
+        let severity = group
+            .iter()
+            .map(|f| f.severity.clone())
+            .max()
+            .unwrap_or(Severity::Info);
+        let category = primary
+            .category
+            .clone()
+            .unwrap_or_else(|| "maintainability".to_string());
+        let title = primary
+            .title
+            .clone()
+            .unwrap_or_else(|| primary.message.clone());
+        let description = primary
+            .description
+            .clone()
+            .unwrap_or_else(|| primary.message.clone());
+        issues.push(CanonicalIssue {
+            severity,
+            category,
+            file: primary.file.clone(),
+            line_start: primary.span.as_ref().map(|s| s.start),
+            line_end: primary.span.as_ref().map(|s| s.end),
+            title,
+            description,
+            suggested_fix: primary.suggested_fix.clone(),
+            raised_by,
+            evidence,
+        });
+    }
+    issues.sort_by(|a, b| {
+        severity_rank(&b.severity)
+            .cmp(&severity_rank(&a.severity))
+            .then(a.file.cmp(&b.file))
+            .then(a.line_start.cmp(&b.line_start))
+            .then(a.title.cmp(&b.title))
+    });
+    issues
+}
+
+fn merge_structured_issues(
+    mut baseline: Vec<CanonicalIssue>,
+    structured: Vec<CanonicalIssue>,
+) -> Vec<CanonicalIssue> {
+    let mut seen = baseline
+        .iter()
+        .map(|issue| {
+            (
+                issue.file.clone(),
+                issue.line_start,
+                normalize_text(&issue.title),
+            )
+        })
+        .collect::<HashSet<_>>();
+    for issue in structured {
+        let key = (
+            issue.file.clone(),
+            issue.line_start,
+            normalize_text(&issue.title),
+        );
+        if seen.insert(key) {
+            baseline.push(issue);
+        }
+    }
+    baseline.sort_by(|a, b| {
+        severity_rank(&b.severity)
+            .cmp(&severity_rank(&a.severity))
+            .then(a.file.cmp(&b.file))
+            .then(a.line_start.cmp(&b.line_start))
+    });
+    baseline
+}
+
+fn normalize_text(input: &str) -> String {
+    input
+        .trim()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn severity_rank(sev: &Severity) -> u8 {
+    match sev {
+        Severity::Critical => 3,
+        Severity::Warning => 2,
+        Severity::Info => 1,
+    }
+}
+
+fn build_action_plan(issues: &[CanonicalIssue]) -> FinalActionPlan {
+    let mut prioritized_steps = Vec::new();
+    let mut quick_wins = Vec::new();
+    for issue in issues {
+        let loc = match (&issue.file, issue.line_start) {
+            (Some(file), Some(line)) => format!("{}:{}", file.display(), line),
+            (Some(file), None) => file.display().to_string(),
+            _ => "<unknown>".to_string(),
+        };
+        let step = format!("[{:?}] {} ({loc})", issue.severity, issue.title);
+        if issue.severity == Severity::Critical || issue.severity == Severity::Warning {
+            prioritized_steps.push(step);
+        } else {
+            quick_wins.push(step);
+        }
+        if prioritized_steps.len() >= 5 && quick_wins.len() >= 5 {
+            break;
+        }
+    }
+    FinalActionPlan {
+        prioritized_steps,
+        quick_wins,
+    }
+}
+
+fn render_pr_comment(issues: &[CanonicalIssue], plan: &FinalActionPlan) -> String {
+    let mut out = String::from("## Crucible Review Summary\n\n");
+    out.push_str(&format!("- Issues: {}\n", issues.len()));
+    let critical = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Critical)
+        .count();
+    let warning = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Warning)
+        .count();
+    out.push_str(&format!("- Critical: {critical}, Warning: {warning}\n\n"));
+    out.push_str("### Top Actions\n");
+    if plan.prioritized_steps.is_empty() {
+        out.push_str("- No blocking actions.\n");
+    } else {
+        for step in &plan.prioritized_steps {
+            out.push_str(&format!("- {step}\n"));
+        }
+    }
+    out.push_str("\n### Notable Issues\n");
+    for issue in issues.iter().take(10) {
+        let location = match (&issue.file, issue.line_start) {
+            (Some(file), Some(line)) => format!("{}:{}", file.display(), line),
+            (Some(file), None) => file.display().to_string(),
+            _ => "<unknown>".to_string(),
+        };
+        out.push_str(&format!(
+            "- **{}** `{}`: {}\n",
+            issue.title, location, issue.description
+        ));
+    }
+    out
 }
 
 #[derive(Debug, Clone)]

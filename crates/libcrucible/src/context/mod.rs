@@ -1,6 +1,7 @@
 use crate::config::CrucibleConfig;
 use crate::context::docs::DocsCollector;
 use crate::context::history::HistoryCollector;
+use crate::context::precheck::collect_precheck_signals;
 use crate::context::reference::ReferenceCollector;
 use anyhow::{Context, Result};
 use git2::{DiffFormat, DiffOptions, Repository};
@@ -10,6 +11,7 @@ use tokio::task;
 
 pub mod docs;
 pub mod history;
+pub mod precheck;
 pub mod reference;
 
 #[derive(Debug, Clone)]
@@ -28,6 +30,8 @@ pub struct GatheredContext {
     pub references: Vec<reference::Reference>,
     pub history: Vec<history::CommitSummary>,
     pub docs: Vec<docs::DocSnippet>,
+    #[serde(default)]
+    pub prechecks: Vec<precheck::PrecheckSignal>,
 }
 
 impl ReviewContext {
@@ -66,10 +70,12 @@ impl ReviewContext {
         });
 
         let (references, history, docs) = tokio::join!(refs_task, history_task, docs_task);
+        let prechecks = collect_precheck_signals(&repo_root, cfg)?;
         let gathered = GatheredContext {
             references: references??,
             history: history??,
             docs: docs??,
+            prechecks,
         };
 
         Ok(Self {
@@ -118,10 +124,12 @@ impl ReviewContext {
         });
 
         let (references, history, docs) = tokio::join!(refs_task, history_task, docs_task);
+        let prechecks = collect_precheck_signals(&repo_root, cfg)?;
         let gathered = GatheredContext {
             references: references??,
             history: history??,
             docs: docs??,
+            prechecks,
         };
 
         Ok(Self {

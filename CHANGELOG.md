@@ -4,9 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.12 - 2026-03-05
+
 - Added `crucible review [PR]` support to checkout PR branches and review PR diffs.
 - Added `--local` and `--repo` review target modes similar to Magpie.
 - Added `--branch [base]` and `--files <paths...>` review target modes.
+- Expanded analyzer schema with `affected_modules`, `call_chain`, `design_patterns`, and reviewer checklist context.
+- Added role-specialized reviewer prompting (Claude: correctness/security, Codex: architecture, Gemini: performance/edge-cases).
+- Added deterministic precheck fusion (`untangle`, linters, type checks, tests) into reviewer context.
+- Added LLM convergence judge phase (`CONVERGED`/`NOT_CONVERGED`) with heuristic fallback.
+- Added optional issue structurizer stage and richer canonical issue schema with evidence anchors.
+- Added confidence calibration for low-confidence singleton findings.
+- Added actionable final outputs: prioritized action plan + ready-to-post PR comment artifact.
+- Added adaptive diff chunking controls (`max_diff_lines_per_chunk`, `max_diff_chunks`) to cap prompt cost.
+- Added `crucible prompt-eval` golden-set harness for precision/recall drift tracking.
 
 ## 0.1.11 - 2026-03-05
 

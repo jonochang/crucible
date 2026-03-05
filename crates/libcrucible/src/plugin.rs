@@ -1,7 +1,8 @@
 use crate::analysis::AgentContext;
 use crate::analysis::FocusAreas;
 use crate::config::CrucibleConfig;
-use crate::report::{AutoFix, Finding, RawFinding};
+use crate::progress::ConvergenceVerdict;
+use crate::report::{AutoFix, CanonicalIssue, Finding, RawFinding};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
@@ -9,6 +10,12 @@ use async_trait::async_trait;
 pub struct AgentReviewOutput {
     pub findings: Vec<RawFinding>,
     pub narrative: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConvergenceDecision {
+    pub verdict: ConvergenceVerdict,
+    pub rationale: String,
 }
 
 #[async_trait]
@@ -26,6 +33,26 @@ pub trait AgentPlugin: Send + Sync {
     ) -> Result<AgentReviewOutput>;
 
     async fn summarize(&self, ctx: &AgentContext, findings: &[Finding]) -> Result<AutoFix>;
+
+    async fn judge_convergence(
+        &self,
+        _ctx: &AgentContext,
+        _round: u8,
+        _findings: &[Finding],
+    ) -> Result<ConvergenceDecision> {
+        Ok(ConvergenceDecision {
+            verdict: ConvergenceVerdict::NotConverged,
+            rationale: "No explicit convergence judge configured".to_string(),
+        })
+    }
+
+    async fn structurize_issues(
+        &self,
+        _ctx: &AgentContext,
+        _findings: &[Finding],
+    ) -> Result<Vec<CanonicalIssue>> {
+        Ok(Vec::new())
+    }
 
     fn session_capability(&self) -> Option<&dyn SessionCapable> {
         None
