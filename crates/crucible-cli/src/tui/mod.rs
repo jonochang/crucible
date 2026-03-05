@@ -10,7 +10,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
-use std::io::stdout;
+use std::io::{stdout, Write};
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 use tokio::sync::mpsc;
@@ -47,6 +47,7 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
     let mut terminal = Terminal::new(backend)?;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut log = open_review_log()?;
     let cfg = cfg.clone();
     let handle = tokio::spawn(async move { libcrucible::run_review_with_progress(&cfg, tx).await });
 
@@ -60,30 +61,33 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
 
     loop {
         while let Ok(event) = rx.try_recv() {
-            match event {
+            match &event {
                 ProgressEvent::AnalyzerStart => screen = Screen::Analyzing,
                 ProgressEvent::AnalyzerDone => progress.analyzer_done = true,
                 ProgressEvent::RoundStart { round, total_rounds, agents } => {
                     screen = Screen::Reviewing;
-                    progress.round = Some(round);
-                    progress.total_rounds = total_rounds;
+                    progress.round = Some(*round);
+                    progress.total_rounds = *total_rounds;
                     progress.agents = agents.clone();
                     progress.statuses = agents
-                        .into_iter()
+                        .iter()
+                        .cloned()
                         .map(|id| (id, AgentStatus::Queued))
                         .collect();
                 }
                 ProgressEvent::AgentStart { id, .. } => {
-                    progress.statuses.insert(id, AgentStatus::Running);
+                    progress.statuses.insert(id.clone(), AgentStatus::Running);
                 }
                 ProgressEvent::AgentDone { id, .. } => {
-                    progress.statuses.insert(id, AgentStatus::Done);
+                    progress.statuses.insert(id.clone(), AgentStatus::Done);
                 }
                 ProgressEvent::AgentError { id, .. } => {
-                    progress.statuses.insert(id, AgentStatus::Error);
+                    progress.statuses.insert(id.clone(), AgentStatus::Error);
                 }
                 ProgressEvent::RoundDone { .. } => {}
                 ProgressEvent::Completed(rep) => {
+                    let json = serde_json::to_string_pretty(rep).unwrap_or_default();
+                    write_log_json(&mut log, &json);
                     if status_line.is_none() {
                         let critical = rep
                             .findings
@@ -110,12 +114,13 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                             info
                         ));
                     }
-                    report = Some(rep);
+                    report = Some(rep.clone());
                     screen = Screen::Review;
                 }
                 ProgressEvent::Canceled => {}
                 _ => {}
             }
+            write_log_event(&mut log, &event);
         }
 
         terminal.draw(|f| {
@@ -158,11 +163,15 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                             KeyCode::Up => diff_scroll = diff_scroll.saturating_sub(1),
                             _ => {}
                         },
-                        _ => {}
+                        _ => match key.code {
+                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
+                            _ => {}
+                        },
                     }
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
                     {
+                        write_log_event(&mut log, &ProgressEvent::Canceled);
                         exit_code = Some(130);
                         break;
                     }
@@ -248,6 +257,52 @@ fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) 
     }
 
     Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false })
+}
+
+fn open_review_log() -> Result<std::fs::File> {
+    let path = std::env::current_dir()?.join("review_report.log");
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    Ok(file)
+}
+
+fn write_log_event(log: &mut std::fs::File, event: &ProgressEvent) {
+    match event {
+        ProgressEvent::AnalyzerStart => {
+            let _ = writeln!(log, "[progress] analyzer:start");
+        }
+        ProgressEvent::AnalyzerDone => {
+            let _ = writeln!(log, "[progress] analyzer:done");
+        }
+        ProgressEvent::RoundStart { round, agents, .. } => {
+            let _ = writeln!(log, "[progress] round:{} start (agents: {})", round, agents.join(","));
+        }
+        ProgressEvent::AgentStart { round, id } => {
+            let _ = writeln!(log, "[progress] agent:start round={} id={}", round, id);
+        }
+        ProgressEvent::AgentDone { round, id } => {
+            let _ = writeln!(log, "[progress] agent:done round={} id={}", round, id);
+        }
+        ProgressEvent::AgentError { round, id, message } => {
+            let _ = writeln!(log, "[progress] agent:error round={} id={} msg={}", round, id, message);
+        }
+        ProgressEvent::RoundDone { round } => {
+            let _ = writeln!(log, "[progress] round:{} done", round);
+        }
+        ProgressEvent::AutoFixReady => {
+            let _ = writeln!(log, "[progress] autofix:ready");
+        }
+        ProgressEvent::Completed(_) => {}
+        ProgressEvent::Canceled => {
+            let _ = writeln!(log, "[progress] canceled");
+        }
+    }
+    let _ = log.flush();
+}
+
+fn write_log_json(log: &mut std::fs::File, json: &str) {
+    let _ = writeln!(log, "[report]");
+    let _ = writeln!(log, "{}", json);
+    let _ = log.flush();
 }
 
 fn render_reviewing<'a>(progress: &'a ProgressState) -> Paragraph<'a> {

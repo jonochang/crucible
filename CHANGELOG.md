@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.7 - 2026-03-05
+
+- Write progress and final reports to `review_report.log`.
+- Allow quitting the TUI at any phase with `q` or `Esc`.
+
 ## 0.1.6 - 2026-03-05
 
 - Default to claude-code, codex, and gemini agents.

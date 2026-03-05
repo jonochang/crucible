@@ -3,7 +3,8 @@ use clap::Args;
 use libcrucible::config::CrucibleConfig;
 use libcrucible::progress::ProgressEvent;
 use libcrucible::report::{ReviewReport, Verdict};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 #[derive(Args)]
@@ -28,11 +29,15 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let log = open_review_log()?;
+    let log = Arc::new(Mutex::new(log));
     let cfg_for_review = cfg.clone();
     let mut review_handle = tokio::spawn(async move { libcrucible::run_review_with_progress(&cfg_for_review, tx).await });
+    let log_for_progress = log.clone();
     let progress_handle = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             emit_progress(&event);
+            let _ = write_log_event(&log_for_progress, &event);
         }
     });
 
@@ -44,17 +49,22 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         }
         _ = tokio::signal::ctrl_c() => {
             emit_progress(&ProgressEvent::Canceled);
+            let _ = write_log_event(&log, &ProgressEvent::Canceled);
             review_handle.abort();
             std::process::exit(130);
         }
     };
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        let json = serde_json::to_string_pretty(&report)?;
+        println!("{json}");
+        write_log_json(&log, &json);
         return Ok(());
     }
 
     print_report(&report);
+    let json = serde_json::to_string_pretty(&report)?;
+    write_log_json(&log, &json);
 
     if args.hook {
         let code = match report.verdict {
@@ -130,5 +140,45 @@ fn emit_progress(event: &ProgressEvent) {
         ProgressEvent::AutoFixReady => eprintln!("[progress] autofix:ready"),
         ProgressEvent::Completed(_) => {}
         ProgressEvent::Canceled => eprintln!("[progress] canceled"),
+    }
+}
+
+fn open_review_log() -> Result<std::fs::File> {
+    let path = std::env::current_dir()?.join("review_report.log");
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    Ok(file)
+}
+
+fn write_log_event(log: &Arc<Mutex<std::fs::File>>, event: &ProgressEvent) -> Result<()> {
+    let mut file = log.lock().expect("log lock");
+    match event {
+        ProgressEvent::AnalyzerStart => writeln!(file, "[progress] analyzer:start")?,
+        ProgressEvent::AnalyzerDone => writeln!(file, "[progress] analyzer:done")?,
+        ProgressEvent::RoundStart { round, agents, .. } => {
+            writeln!(file, "[progress] round:{} start (agents: {})", round, agents.join(","))?
+        }
+        ProgressEvent::AgentStart { round, id } => {
+            writeln!(file, "[progress] agent:start round={} id={}", round, id)?
+        }
+        ProgressEvent::AgentDone { round, id } => {
+            writeln!(file, "[progress] agent:done round={} id={}", round, id)?
+        }
+        ProgressEvent::AgentError { round, id, message } => {
+            writeln!(file, "[progress] agent:error round={} id={} msg={}", round, id, message)?
+        }
+        ProgressEvent::RoundDone { round } => writeln!(file, "[progress] round:{} done", round)?,
+        ProgressEvent::AutoFixReady => writeln!(file, "[progress] autofix:ready")?,
+        ProgressEvent::Completed(_) => {}
+        ProgressEvent::Canceled => writeln!(file, "[progress] canceled")?,
+    }
+    let _ = file.flush();
+    Ok(())
+}
+
+fn write_log_json(log: &Arc<Mutex<std::fs::File>>, json: &str) {
+    if let Ok(mut file) = log.lock() {
+        let _ = writeln!(file, "[report]");
+        let _ = writeln!(file, "{}", json);
+        let _ = file.flush();
     }
 }

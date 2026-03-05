@@ -12,6 +12,7 @@
 ### Progress Output
 
 Crucible prints progress lines to stderr (stdout reserved for JSON or final report).
+It also appends the same progress lines to `review_report.log` in the current working directory.
 
 Phases:
 - `analyzer` start/end
@@ -39,6 +40,15 @@ Notes:
 - Agent start/done lines may interleave.
 - If a review is canceled, emit:
   `"[progress] canceled"` then exit `130`.
+
+### Report Log
+
+At completion, Crucible appends a JSON report to `review_report.log`:
+
+```
+[report]
+{ ... pretty JSON ... }
+```
 
 ### Exit Codes
 
@@ -77,6 +87,10 @@ At the end of each round, the TUI prints a short summary block before moving to 
 ```
 Round 1 complete — 3 findings (1 Critical, 1 Warning, 1 Info)
 ```
+
+### Report Log
+
+The TUI also writes progress lines and the final JSON report to `review_report.log`.
 
 ## Test Requirements (BDD)
 

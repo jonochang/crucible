@@ -165,6 +165,7 @@ Behavior:
 - `--json` prints the full report as JSON (no TUI).
 - `--hook` sets the exit code based on the verdict (see Exit Codes).
 - `--verbose` streams agent stdout/stderr to help debug CLI integrations.
+- Progress and the final JSON report are appended to `review_report.log` in the current directory.
 
 ### `crucible hook`
 
