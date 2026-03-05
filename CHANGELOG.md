@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.13 - 2026-03-06
+
+- Release cut for the FINDINGS.md implementation wave.
+- Bumped crate/package versions to `0.1.13` for Cargo and Nix installs.
+
 ## 0.1.12 - 2026-03-05
 
 - Added `crucible review [PR]` support to checkout PR branches and review PR diffs.
