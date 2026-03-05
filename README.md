@@ -81,7 +81,7 @@ docs_patterns = ["docs/**/*.md", "README.md", "ARCHITECTURE.md"]
 docs_max_bytes = 50000
 
 [coordinator]
-max_rounds = 3
+max_rounds = 2
 quorum_threshold = 0.75
 agent_timeout_secs = 90
 devil_advocate = false
@@ -95,7 +95,7 @@ google_rpm = 60
 openai_rpm = 60
 
 [plugins]
-agents = ["claude-code", "codex", "gemini", "open-code"]
+agents = ["claude-code", "codex", "gemini"]
 judge = "claude-code"
 analyzer = "claude-code"
 paths = []

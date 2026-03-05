@@ -96,7 +96,7 @@ impl Default for CrucibleConfig {
                 docs_max_bytes: 50_000,
             },
             coordinator: CoordinatorConfig {
-                max_rounds: 3,
+                max_rounds: 2,
                 quorum_threshold: 0.75,
                 agent_timeout_secs: 90,
                 devil_advocate: false,
@@ -104,12 +104,7 @@ impl Default for CrucibleConfig {
             verdict: VerdictConfig { block_on: "Critical".to_string() },
             rate_limits: RateLimitConfig { anthropic_rpm: 50, google_rpm: 60, openai_rpm: 60 },
             plugins: PluginsConfig {
-                agents: vec![
-                    "claude-code".to_string(),
-                    "codex".to_string(),
-                    "gemini".to_string(),
-                    "open-code".to_string(),
-                ],
+                agents: vec!["claude-code".to_string(), "codex".to_string(), "gemini".to_string()],
                 judge: "claude-code".to_string(),
                 analyzer: "claude-code".to_string(),
                 paths: vec![],

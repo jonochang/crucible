@@ -33,31 +33,32 @@ impl Coordinator {
             .await?;
         self.emit(crate::progress::ProgressEvent::AnalyzerDone);
 
-        self.snapshotter.freeze_round(1, &HashMap::new());
-
-        let round = 1;
-        let agents = self.registry.agents.iter().map(|a| a.id().to_string()).collect();
-        self.emit(crate::progress::ProgressEvent::RoundStart { round, agents });
+        let total_rounds = self.cfg.coordinator.max_rounds.max(1);
         let agent_ctx = ctx.into_agent_ctx(Some(&focus));
-        for agent in &self.registry.agents {
-            let id = agent.id();
-            self.emit(crate::progress::ProgressEvent::AgentStart { round, id: id.to_string() });
-            let raw = match agent.analyze(&agent_ctx).await {
-                Ok(raw) => raw,
-                Err(err) => {
-                    self.emit(crate::progress::ProgressEvent::AgentError {
-                        round,
-                        id: id.to_string(),
-                        message: err.to_string(),
-                    });
-                    return Err(err);
-                }
-            };
-            self.consensus.ingest_round(&raw, round, id);
-            self.emit(crate::progress::ProgressEvent::AgentDone { round, id: id.to_string() });
+        for round in 1..=total_rounds {
+            self.snapshotter.freeze_round(round, &HashMap::new());
+            let agents = self.registry.agents.iter().map(|a| a.id().to_string()).collect();
+            self.emit(crate::progress::ProgressEvent::RoundStart { round, total_rounds, agents });
+            for agent in &self.registry.agents {
+                let id = agent.id();
+                self.emit(crate::progress::ProgressEvent::AgentStart { round, id: id.to_string() });
+                let raw = match agent.analyze(&agent_ctx).await {
+                    Ok(raw) => raw,
+                    Err(err) => {
+                        self.emit(crate::progress::ProgressEvent::AgentError {
+                            round,
+                            id: id.to_string(),
+                            message: err.to_string(),
+                        });
+                        return Err(err);
+                    }
+                };
+                self.consensus.ingest_round(&raw, round, id);
+                self.emit(crate::progress::ProgressEvent::AgentDone { round, id: id.to_string() });
+            }
+            self.emit(crate::progress::ProgressEvent::RoundDone { round });
         }
         let findings = self.consensus.all_findings();
-        self.emit(crate::progress::ProgressEvent::RoundDone { round });
 
         let auto_fix = if findings.iter().any(|f| f.severity >= Severity::Warning) {
             Some(self.registry.judge.summarize(&agent_ctx, &findings).await?)
@@ -181,10 +182,12 @@ impl ConsensusTracker {
                 self.clusters
                     .entry(entry_key)
                     .and_modify(|state| {
-                        state.findings.push(finding.clone());
-                        state.agents.insert(agent_id.to_string());
-                        if finding.severity > state.severity {
-                            state.severity = finding.severity.clone();
+                        if !state.agents.contains(agent_id) {
+                            state.findings.push(finding.clone());
+                            state.agents.insert(agent_id.to_string());
+                            if finding.severity > state.severity {
+                                state.severity = finding.severity.clone();
+                            }
                         }
                     })
                     .or_insert_with(|| {
@@ -197,7 +200,13 @@ impl ConsensusTracker {
                         }
                     });
             } else {
-                self.loose.push(finding);
+                let already = self
+                    .loose
+                    .iter()
+                    .any(|f| f.agent == finding.agent && f.message == finding.message);
+                if !already {
+                    self.loose.push(finding);
+                }
             }
         }
     }

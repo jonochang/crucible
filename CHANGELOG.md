@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.6 - 2026-03-05
+
+- Default to claude-code, codex, and gemini agents.
+- Run two review rounds to reach consensus.
+
 ## 0.1.5 - 2026-03-05
 
 - Added CLI progress events, per-agent TUI status, and interrupt handling.

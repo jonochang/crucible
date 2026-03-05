@@ -35,6 +35,7 @@ enum AgentStatus {
 struct ProgressState {
     analyzer_done: bool,
     round: Option<u8>,
+    total_rounds: u8,
     agents: Vec<String>,
     statuses: std::collections::HashMap<String, AgentStatus>,
 }
@@ -62,9 +63,10 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
             match event {
                 ProgressEvent::AnalyzerStart => screen = Screen::Analyzing,
                 ProgressEvent::AnalyzerDone => progress.analyzer_done = true,
-                ProgressEvent::RoundStart { round, agents } => {
+                ProgressEvent::RoundStart { round, total_rounds, agents } => {
                     screen = Screen::Reviewing;
                     progress.round = Some(round);
+                    progress.total_rounds = total_rounds;
                     progress.agents = agents.clone();
                     progress.statuses = agents
                         .into_iter()
@@ -98,8 +100,10 @@ pub async fn run_review_tui(cfg: &CrucibleConfig) -> Result<i32> {
                             .iter()
                             .filter(|f| matches!(f.severity, libcrucible::report::Severity::Info))
                             .count();
+                        let total = progress.total_rounds.max(1);
                         status_line = Some(format!(
-                            "Round 1 complete — {} findings ({} Critical, {} Warning, {} Info)",
+                            "Round {} complete — {} findings ({} Critical, {} Warning, {} Info)",
+                            total,
                             rep.findings.len(),
                             critical,
                             warning,
@@ -249,8 +253,9 @@ fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) 
 fn render_reviewing<'a>(progress: &'a ProgressState) -> Paragraph<'a> {
     let mut lines = Vec::new();
     let round = progress.round.unwrap_or(1);
+    let total = progress.total_rounds.max(1);
     let analyzer = if progress.analyzer_done { "done" } else { "running" };
-    lines.push(Line::from(format!("Round {}/1  (Analyzer: {})", round, analyzer)));
+    lines.push(Line::from(format!("Round {}/{}  (Analyzer: {})", round, total, analyzer)));
     for id in &progress.agents {
         let status = match progress.statuses.get(id).copied().unwrap_or(AgentStatus::Queued) {
             AgentStatus::Queued => "queued",

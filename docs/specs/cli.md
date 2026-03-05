@@ -24,12 +24,14 @@ Required line formats (exact prefixes):
 ```
 [progress] analyzer:start
 [progress] analyzer:done
-[progress] round:1 start (agents: claude-code,codex,gemini,open-code)
+[progress] round:1 start (agents: claude-code,codex,gemini)
 [progress] agent:start round=1 id=claude-code
 [progress] agent:done round=1 id=claude-code
 [progress] agent:start round=1 id=codex
 [progress] agent:done round=1 id=codex
 [progress] round:1 done
+[progress] round:2 start (agents: claude-code,codex,gemini)
+[progress] round:2 done
 [progress] autofix:ready
 ```
 
@@ -51,11 +53,10 @@ Notes:
 The main screen displays a live status panel:
 
 ```
-Round 1/1  (Analyzer: done)
+Round 1/2  (Analyzer: done)
 claude-code  [running]
 codex        [done]
 gemini       [queued]
-open-code    [queued]
 ```
 
 Statuses:
@@ -88,4 +89,3 @@ Round 1 complete — 3 findings (1 Critical, 1 Warning, 1 Info)
 
 - When running in TUI mode, sending `Ctrl+C` should terminate the process with exit code `130`.
 - When running in non-TUI mode, sending `Ctrl+C` should terminate the process with exit code `130`.
-

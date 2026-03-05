@@ -114,7 +114,7 @@ fn emit_progress(event: &ProgressEvent) {
     match event {
         ProgressEvent::AnalyzerStart => eprintln!("[progress] analyzer:start"),
         ProgressEvent::AnalyzerDone => eprintln!("[progress] analyzer:done"),
-        ProgressEvent::RoundStart { round, agents } => {
+        ProgressEvent::RoundStart { round, agents, .. } => {
             eprintln!("[progress] round:{} start (agents: {})", round, agents.join(","));
         }
         ProgressEvent::AgentStart { round, id } => {
