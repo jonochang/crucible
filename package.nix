@@ -19,7 +19,14 @@ let
   };
   in rustPlatform.buildRustPackage ({
     pname = "crucible";
-    version = "0.1.2";
+    version = "0.1.3";
     inherit src buildInputs nativeBuildInputs;
     cargoLock.lockFile = ./Cargo.lock;
+    cargoBuildFlags = [ "-p" "crucible-cli" ];
+    postInstall = ''
+      if [ -x "$out/bin/crucible-cli" ] && [ ! -e "$out/bin/crucible" ]; then
+        ln -s $out/bin/crucible-cli $out/bin/crucible
+      fi
+    '';
+    meta.mainProgram = "crucible";
   } // env)

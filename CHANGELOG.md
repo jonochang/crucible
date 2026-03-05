@@ -13,6 +13,10 @@ All notable changes to this project will be documented in this file.
 - Added Cucumber BDD scenarios with mock agents and opt-in real agent runs.
 - Aligned Gemini CLI invocation and parsing with CLI-based workflows.
 
+## 0.1.3 - 2026-03-05
+
+- Simplified Nix installs by building `crucible-cli` and exposing a `crucible` shim.
+
 ## 0.1.0 - 2026-03-03
 
 - Initial MVP release.
