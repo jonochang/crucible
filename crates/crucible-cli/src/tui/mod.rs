@@ -56,7 +56,11 @@ struct AgentReviewState {
     details: String,
 }
 
-pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i32> {
+pub async fn run_review_tui(
+    cfg: &CrucibleConfig,
+    interactive: bool,
+    diff_override: Option<String>,
+) -> Result<i32> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout());
@@ -65,7 +69,13 @@ pub async fn run_review_tui(cfg: &CrucibleConfig, interactive: bool) -> Result<i
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut log = open_review_log()?;
     let cfg = cfg.clone();
-    let handle = tokio::spawn(async move { libcrucible::run_review_with_progress(&cfg, tx).await });
+    let handle = tokio::spawn(async move {
+        if let Some(diff) = diff_override {
+            libcrucible::run_review_with_progress_diff(&cfg, tx, diff).await
+        } else {
+            libcrucible::run_review_with_progress(&cfg, tx).await
+        }
+    });
 
     let mut screen = Screen::Analyzing;
     let mut report: Option<ReviewReport> = None;

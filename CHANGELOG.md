@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.17 - 2026-03-06
+
+- Enabled TUI for non-local review targets (e.g. `--branch`) when running in a terminal.
+- Changed default `crucible review` target to current branch delta plus local worktree changes.
+- Added base branch resolution fallback (`origin/HEAD` -> `main` -> `master`) for default branch-aware reviews.
+
 ## 0.1.16 - 2026-03-06
 
 - Removed `git` CLI dependency from local/repo/branch/files diff paths by using `libgit2` directly.

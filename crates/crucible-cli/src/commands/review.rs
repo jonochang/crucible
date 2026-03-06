@@ -96,26 +96,32 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>(),
         )
+    } else if args.local {
+        ReviewTarget::Local
     } else if args.repo {
         ReviewTarget::Repo
     } else {
-        ReviewTarget::Local
+        ReviewTarget::CurrentBranchWithLocal
     };
     let diff_override = resolve_review_diff(&target, &args.git_remote)?;
-    if matches!(target, ReviewTarget::Local) {
+    if matches!(
+        target,
+        ReviewTarget::Local | ReviewTarget::CurrentBranchWithLocal
+    ) {
         let diff = diff_override.as_deref().unwrap_or_default();
         if diff.trim().is_empty() || count_changed_lines(diff) == 0 {
-            println!("No local code changes detected; skipping review.");
+            println!("No branch/local code changes detected; skipping review.");
             return Ok(());
         }
     }
 
-    let use_tui = matches!(target, ReviewTarget::Local)
-        && !args.hook
+    let use_tui = !args.hook
         && args.export_issues.is_none()
+        && !args.json
         && std::io::stdout().is_terminal();
     if use_tui {
-        let exit_code = crate::tui::run_review_tui(&cfg, args.interactive).await?;
+        let exit_code =
+            crate::tui::run_review_tui(&cfg, args.interactive, diff_override.clone()).await?;
         std::process::exit(exit_code);
     }
 
@@ -184,6 +190,8 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
 
 #[derive(Debug, Clone)]
 enum ReviewTarget {
+    /// Review current branch delta (vs base branch) plus local worktree/index changes.
+    CurrentBranchWithLocal,
     /// Review uncommitted local changes from working tree/index.
     Local,
     /// Review current branch against remote default branch.
@@ -201,6 +209,21 @@ enum ReviewTarget {
 fn resolve_review_diff(target: &ReviewTarget, git_remote: &str) -> Result<Option<String>> {
     let repo = Repository::discover(".")?;
     match target {
+        ReviewTarget::CurrentBranchWithLocal => {
+            if let Some(base_ref) = resolve_base_ref_for_current_branch(&repo, git_remote)? {
+                let diff = diff_base_to_workdir_with_index(&repo, &base_ref, "HEAD")?;
+                if diff.trim().is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(diff))
+            } else {
+                let diff = diff_worktree_vs_head(&repo)?;
+                if diff.trim().is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(diff))
+            }
+        }
         ReviewTarget::Local => {
             let diff = diff_worktree_vs_head(&repo)?;
             if diff.trim().is_empty() {
@@ -209,14 +232,11 @@ fn resolve_review_diff(target: &ReviewTarget, git_remote: &str) -> Result<Option
             Ok(Some(diff))
         }
         ReviewTarget::Repo => {
-            let base_branch = resolve_remote_default_branch(&repo, git_remote)?;
-            let base_ref = format!("refs/remotes/{git_remote}/{base_branch}");
+            let base_ref = resolve_base_ref_for_current_branch(&repo, git_remote)?
+                .ok_or_else(|| anyhow::anyhow!("unable to resolve base branch for --repo"))?;
             let diff = diff_three_dot_refs(&repo, &base_ref, "HEAD")?;
             if diff.trim().is_empty() {
-                anyhow::bail!(
-                    "no repo diff found for range {}...HEAD",
-                    format!("{git_remote}/{base_branch}")
-                );
+                anyhow::bail!("no repo diff found for range {}...HEAD", base_ref);
             }
             Ok(Some(diff))
         }
@@ -256,6 +276,22 @@ fn resolve_remote_default_branch(repo: &Repository, git_remote: &str) -> Result<
         .strip_prefix(&prefix)
         .unwrap_or("main")
         .to_string())
+}
+
+fn resolve_base_ref_for_current_branch(
+    repo: &Repository,
+    git_remote: &str,
+) -> Result<Option<String>> {
+    if let Ok(branch) = resolve_remote_default_branch(repo, git_remote) {
+        return Ok(Some(format!("refs/remotes/{git_remote}/{branch}")));
+    }
+    if repo.find_reference("refs/heads/main").is_ok() {
+        return Ok(Some("refs/heads/main".to_string()));
+    }
+    if repo.find_reference("refs/heads/master").is_ok() {
+        return Ok(Some("refs/heads/master".to_string()));
+    }
+    Ok(None)
 }
 
 /// Checkout the PR branch into the current repository using GitHub CLI.
@@ -305,6 +341,21 @@ fn diff_three_dot_refs(repo: &Repository, base_ref: &str, head_ref: &str) -> Res
     let merge_base_tree = repo.find_commit(merge_base)?.tree()?;
     let head_tree = head_commit.tree()?;
     let diff = repo.diff_tree_to_tree(Some(&merge_base_tree), Some(&head_tree), None)?;
+    render_diff_to_patch(&diff)
+}
+
+fn diff_base_to_workdir_with_index(
+    repo: &Repository,
+    base_ref: &str,
+    head_ref: &str,
+) -> Result<String> {
+    let base_commit = peel_commit(repo, base_ref)?;
+    let head_commit = peel_commit(repo, head_ref)?;
+    let merge_base = repo.merge_base(base_commit.id(), head_commit.id())?;
+    let merge_base_tree = repo.find_commit(merge_base)?.tree()?;
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true);
+    let diff = repo.diff_tree_to_workdir_with_index(Some(&merge_base_tree), Some(&mut opts))?;
     render_diff_to_patch(&diff)
 }
 
