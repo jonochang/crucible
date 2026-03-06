@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::process::ExitCode;
 
 mod commands;
+mod log_helpers;
 mod tui;
 
 #[derive(Parser)]

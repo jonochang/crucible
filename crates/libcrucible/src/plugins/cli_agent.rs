@@ -281,7 +281,7 @@ fn debug_log_line(message: &str) {
 fn timestamp_string() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => format!("{}.{}", d.as_secs(), d.subsec_millis()),
+        Ok(d) => format!("{}.{:03}", d.as_secs(), d.subsec_millis()),
         Err(_) => "0.000".to_string(),
     }
 }

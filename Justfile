@@ -5,4 +5,4 @@ crucible-pre-push:
     echo "crucible: no local diff detected; skipping review"
     exit 0
   fi
-  exec crucible review --hook --reviewer claude-code --max-rounds 1
+  exec crucible review --local --hook --reviewer claude-code --max-rounds 1

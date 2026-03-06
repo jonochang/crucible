@@ -1,3 +1,4 @@
+use crate::log_helpers;
 use anyhow::{Context, Result};
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -5,14 +6,14 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use libcrucible::config::CrucibleConfig;
-use libcrucible::progress::{ConvergenceVerdict, ProgressEvent, ReviewerState};
+use libcrucible::progress::{ProgressEvent, ReviewerState};
 use libcrucible::report::{ReviewReport, Verdict};
 use ratatui::Terminal;
 use ratatui::layout::Alignment;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use std::io::{Write, stdout};
+use std::io::stdout;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 use tokio::sync::mpsc;
@@ -185,7 +186,7 @@ pub async fn run_review_tui(
                     progress.convergence = Some(format!(
                         "Round {} convergence: {} - {}",
                         round,
-                        format_convergence(*verdict),
+                        log_helpers::format_convergence(*verdict),
                         rationale
                     ));
                 }
@@ -390,187 +391,19 @@ fn open_review_log() -> Result<std::fs::File> {
 }
 
 fn write_log_event(log: &mut std::fs::File, event: &ProgressEvent) {
-    let _ = write!(log, "[{}] ", log_timestamp());
-    match event {
-        ProgressEvent::RunHeader {
-            reviewers,
-            max_rounds,
-            changed_files,
-            changed_lines,
-            convergence_enabled,
-            context_enabled,
-        } => {
-            let _ = writeln!(
-                log,
-                "[progress] run:header reviewers={} max_rounds={} changed_files={} changed_lines={} convergence_enabled={} context_enabled={}",
-                reviewers.join(","),
-                max_rounds,
-                changed_files,
-                changed_lines,
-                convergence_enabled,
-                context_enabled
-            );
-        }
-        ProgressEvent::PhaseStart { phase } => {
-            let _ = writeln!(log, "[progress] phase:start {}", phase);
-        }
-        ProgressEvent::PhaseDone { phase } => {
-            let _ = writeln!(log, "[progress] phase:done {}", phase);
-        }
-        ProgressEvent::AnalyzerStart => {
-            let _ = writeln!(log, "[progress] analyzer:start");
-        }
-        ProgressEvent::AnalyzerDone => {
-            let _ = writeln!(log, "[progress] analyzer:done");
-        }
-        ProgressEvent::AnalysisReady { markdown } => {
-            let _ = writeln!(log, "[analysis]");
-            let _ = writeln!(log, "{}", markdown);
-        }
-        ProgressEvent::SystemContextReady { markdown } => {
-            let _ = writeln!(log, "[system-context]");
-            let _ = writeln!(log, "{}", markdown);
-        }
-        ProgressEvent::RoundStart { round, agents, .. } => {
-            let _ = writeln!(
-                log,
-                "[progress] round:{} start (agents: {})",
-                round,
-                agents.join(",")
-            );
-        }
-        ProgressEvent::ParallelStatus { round, statuses } => {
-            let _ = writeln!(
-                log,
-                "[progress] round:{} status {}",
-                round,
-                format_parallel_status(statuses)
-            );
-        }
-        ProgressEvent::AgentStart { round, id } => {
-            let _ = writeln!(log, "[progress] agent:start round={} id={}", round, id);
-        }
-        ProgressEvent::AgentReview {
-            round,
-            id,
-            summary,
-            highlights,
-            details,
-        } => {
-            let _ = writeln!(log, "[agent-review] round={} id={} {}", round, id, summary);
-            let _ = writeln!(log, "[agent-review] details:\n{}", details);
-            for h in highlights {
-                let _ = writeln!(
-                    log,
-                    "[agent-review]   [{}] {} {}",
-                    h.severity, h.location, h.message
-                );
-            }
-        }
-        ProgressEvent::AgentDone { round, id } => {
-            let _ = writeln!(log, "[progress] agent:done round={} id={}", round, id);
-        }
-        ProgressEvent::AgentError { round, id, message } => {
-            let _ = writeln!(
-                log,
-                "[progress] agent:error round={} id={} msg={}",
-                round, id, message
-            );
-        }
-        ProgressEvent::RoundDone { round } => {
-            let _ = writeln!(log, "[progress] round:{} done", round);
-        }
-        ProgressEvent::ConvergenceJudgment {
-            round,
-            verdict,
-            rationale,
-        } => {
-            let _ = writeln!(
-                log,
-                "[progress] convergence round={} verdict={} rationale={}",
-                round,
-                format_convergence(*verdict),
-                rationale
-            );
-        }
-        ProgressEvent::RoundComplete {
-            round,
-            total_rounds,
-        } => {
-            let _ = writeln!(log, "[progress] round:{}/{} complete", round, total_rounds);
-        }
-        ProgressEvent::AutoFixReady => {
-            let _ = writeln!(log, "[progress] autofix:ready");
-        }
-        ProgressEvent::Completed(_) => {}
-        ProgressEvent::Canceled => {
-            let _ = writeln!(log, "[progress] canceled");
-        }
-    }
-    let _ = log.flush();
+    log_helpers::write_log_event(log, event);
 }
 
 fn write_log_json(log: &mut std::fs::File, json: &str) {
-    let _ = writeln!(log, "[{}] [report]", log_timestamp());
-    let _ = writeln!(log, "{}", json);
-    let _ = log.flush();
+    log_helpers::write_log_json(log, json);
 }
 
 fn write_log_report_sections(log: &mut std::fs::File, report: &ReviewReport) {
-    if let Some(final_analysis) = &report.final_analysis_markdown {
-        let _ = writeln!(log, "[{}] [final-analysis]", log_timestamp());
-        let _ = writeln!(log, "{}", final_analysis);
-    }
-    if let Some(comment) = &report.pr_comment_markdown {
-        let _ = writeln!(log, "[{}] [pr-comment]", log_timestamp());
-        let _ = writeln!(log, "{}", comment);
-    }
-    let _ = log.flush();
+    log_helpers::write_log_report_sections(log, report);
 }
 
 fn render_report_json(report: &ReviewReport) -> String {
-    match serde_json::to_string_pretty(report) {
-        Ok(s) => s,
-        Err(_) => {
-            let consensus = report
-                .consensus_map
-                .0
-                .iter()
-                .map(|(key, status)| {
-                    serde_json::json!({
-                        "file": key.file,
-                        "span": key.span,
-                        "agreed_count": status.agreed_count,
-                        "total_agents": status.total_agents,
-                        "severity": status.severity,
-                        "reached_quorum": status.reached_quorum
-                    })
-                })
-                .collect::<Vec<_>>();
-            serde_json::to_string_pretty(&serde_json::json!({
-                "verdict": report.verdict,
-                "findings": report.findings,
-                "issues": report.issues,
-                "analysis_markdown": report.analysis_markdown,
-                "system_context_markdown": report.system_context_markdown,
-                "final_analysis_markdown": report.final_analysis_markdown,
-                "consensus": consensus,
-                "auto_fix": report.auto_fix,
-                "final_action_plan": report.final_action_plan,
-                "pr_comment_markdown": report.pr_comment_markdown,
-                "session_id": report.session_id
-            }))
-            .unwrap_or_else(|_| "{}".to_string())
-        }
-    }
-}
-
-fn log_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => format!("{}.{}", d.as_secs(), d.subsec_millis()),
-        Err(_) => "0.000".to_string(),
-    }
+    log_helpers::render_report_json(report)
 }
 
 fn render_reviewing<'a>(progress: &'a ProgressState, spinner: &'static str) -> Paragraph<'a> {
@@ -674,28 +507,7 @@ fn apply_patch(diff: &str) -> Result<()> {
 }
 
 fn format_parallel_status(statuses: &[libcrucible::progress::ReviewerStatus]) -> String {
-    let mut parts = Vec::with_capacity(statuses.len());
-    for status in statuses {
-        let marker = match status.state {
-            ReviewerState::Queued => "...",
-            ReviewerState::Running => "RUN",
-            ReviewerState::Done => "OK",
-            ReviewerState::Error => "ERR",
-        };
-        let part = match status.duration_secs {
-            Some(secs) => format!("{marker} {} ({secs:.1}s)", status.id),
-            None => format!("{marker} {}", status.id),
-        };
-        parts.push(part);
-    }
-    format!("[{}]", parts.join(" | "))
-}
-
-fn format_convergence(verdict: ConvergenceVerdict) -> &'static str {
-    match verdict {
-        ConvergenceVerdict::Converged => "CONVERGED",
-        ConvergenceVerdict::NotConverged => "NOT_CONVERGED",
-    }
+    log_helpers::format_parallel_status(statuses)
 }
 
 fn truncate_line(input: &str, max: usize) -> String {
