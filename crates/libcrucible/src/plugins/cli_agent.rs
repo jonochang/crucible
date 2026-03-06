@@ -55,8 +55,15 @@ impl CliAgentPlugin {
             "[{}] invoking {} {:?}",
             self.id, self.command, self.args
         ));
-        debug_log_line(&format!("[{}] system prompt:\n{}", self.id, system));
-        debug_log_line(&format!("[{}] user prompt:\n{}", self.id, user));
+        if is_verbose() {
+            debug_log_line(&format!("[{}] system prompt:\n{}", self.id, system));
+            debug_log_line(&format!("[{}] user prompt:\n{}", self.id, user));
+        } else {
+            debug_log_line(&format!(
+                "[{}] prompts omitted in debug mode (enable --verbose to include full prompts/diff)",
+                self.id
+            ));
+        }
         let prompt = if is_claude {
             user
         } else if is_gemini {
@@ -266,8 +273,16 @@ fn debug_log_line(message: &str) {
         return;
     };
     if let Ok(mut file) = lock.lock() {
-        let _ = writeln!(file, "{}", message);
+        let _ = writeln!(file, "[{}] {}", timestamp_string(), message);
         let _ = file.flush();
+    }
+}
+
+fn timestamp_string() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => format!("{}.{}", d.as_secs(), d.subsec_millis()),
+        Err(_) => "0.000".to_string(),
     }
 }
 

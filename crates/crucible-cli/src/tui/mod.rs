@@ -60,6 +60,7 @@ pub async fn run_review_tui(
     cfg: &CrucibleConfig,
     interactive: bool,
     diff_override: Option<String>,
+    scope_label: String,
 ) -> Result<i32> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -82,6 +83,7 @@ pub async fn run_review_tui(
     let mut diff_scroll: u16 = 0;
     let mut status_line: Option<String> = None;
     let mut progress = ProgressState::default();
+    progress.run_header = Some(scope_label);
     let mut last_tick = Instant::now();
     let mut spinner_idx: usize = 0;
     let mut exit_code: Option<i32> = None;
@@ -95,12 +97,16 @@ pub async fn run_review_tui(
                     changed_lines,
                     ..
                 } => {
-                    progress.run_header = Some(format!(
+                    let runtime = format!(
                         "Reviewers: {} | Max rounds: {} | Changed lines: {}",
                         reviewers.join(", "),
                         max_rounds,
                         changed_lines
-                    ));
+                    );
+                    progress.run_header = Some(match progress.run_header.take() {
+                        Some(scope) => format!("{scope}\n{runtime}"),
+                        None => runtime,
+                    });
                 }
                 ProgressEvent::PhaseStart { phase } => {
                     progress.phase = Some(format!("{} (running)", phase))
@@ -190,8 +196,9 @@ pub async fn run_review_tui(
                     status_line = Some(format!("Round {}/{} complete", round, total_rounds));
                 }
                 ProgressEvent::Completed(rep) => {
-                    let json = serde_json::to_string_pretty(rep).unwrap_or_default();
+                    let json = render_report_json(rep);
                     write_log_json(&mut log, &json);
+                    write_log_report_sections(&mut log, rep);
                     report = Some(rep.clone());
                     screen = Screen::Review;
                     if !interactive {
@@ -383,6 +390,7 @@ fn open_review_log() -> Result<std::fs::File> {
 }
 
 fn write_log_event(log: &mut std::fs::File, event: &ProgressEvent) {
+    let _ = write!(log, "[{}] ", log_timestamp());
     match event {
         ProgressEvent::RunHeader {
             reviewers,
@@ -503,9 +511,66 @@ fn write_log_event(log: &mut std::fs::File, event: &ProgressEvent) {
 }
 
 fn write_log_json(log: &mut std::fs::File, json: &str) {
-    let _ = writeln!(log, "[report]");
+    let _ = writeln!(log, "[{}] [report]", log_timestamp());
     let _ = writeln!(log, "{}", json);
     let _ = log.flush();
+}
+
+fn write_log_report_sections(log: &mut std::fs::File, report: &ReviewReport) {
+    if let Some(final_analysis) = &report.final_analysis_markdown {
+        let _ = writeln!(log, "[{}] [final-analysis]", log_timestamp());
+        let _ = writeln!(log, "{}", final_analysis);
+    }
+    if let Some(comment) = &report.pr_comment_markdown {
+        let _ = writeln!(log, "[{}] [pr-comment]", log_timestamp());
+        let _ = writeln!(log, "{}", comment);
+    }
+    let _ = log.flush();
+}
+
+fn render_report_json(report: &ReviewReport) -> String {
+    match serde_json::to_string_pretty(report) {
+        Ok(s) => s,
+        Err(_) => {
+            let consensus = report
+                .consensus_map
+                .0
+                .iter()
+                .map(|(key, status)| {
+                    serde_json::json!({
+                        "file": key.file,
+                        "span": key.span,
+                        "agreed_count": status.agreed_count,
+                        "total_agents": status.total_agents,
+                        "severity": status.severity,
+                        "reached_quorum": status.reached_quorum
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_string_pretty(&serde_json::json!({
+                "verdict": report.verdict,
+                "findings": report.findings,
+                "issues": report.issues,
+                "analysis_markdown": report.analysis_markdown,
+                "system_context_markdown": report.system_context_markdown,
+                "final_analysis_markdown": report.final_analysis_markdown,
+                "consensus": consensus,
+                "auto_fix": report.auto_fix,
+                "final_action_plan": report.final_action_plan,
+                "pr_comment_markdown": report.pr_comment_markdown,
+                "session_id": report.session_id
+            }))
+            .unwrap_or_else(|_| "{}".to_string())
+        }
+    }
+}
+
+fn log_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => format!("{}.{}", d.as_secs(), d.subsec_millis()),
+        Err(_) => "0.000".to_string(),
+    }
 }
 
 fn render_reviewing<'a>(progress: &'a ProgressState, spinner: &'static str) -> Paragraph<'a> {

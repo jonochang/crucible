@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.18 - 2026-03-06
+
+- Added explicit `[final-analysis]` and `[pr-comment]` sections to `review_report.log` output.
+- Fixed TUI-side final report logging to use robust JSON fallback serialization.
+- Improved debug logging behavior so full prompts/diffs are logged only with `--verbose`.
+- Added timestamps to debug/progress/report log entries.
+
 ## 0.1.17 - 2026-03-06
 
 - Enabled TUI for non-local review targets (e.g. `--branch`) when running in a terminal.

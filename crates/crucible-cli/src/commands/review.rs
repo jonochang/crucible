@@ -103,6 +103,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     } else {
         ReviewTarget::CurrentBranchWithLocal
     };
+    let scope_label = describe_review_scope(&target, &args.git_remote)?;
     let diff_override = resolve_review_diff(&target, &args.git_remote)?;
     if matches!(
         target,
@@ -121,7 +122,8 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         && std::io::stdout().is_terminal();
     if use_tui {
         let exit_code =
-            crate::tui::run_review_tui(&cfg, args.interactive, diff_override.clone()).await?;
+            crate::tui::run_review_tui(&cfg, args.interactive, diff_override.clone(), scope_label)
+                .await?;
         std::process::exit(exit_code);
     }
 
@@ -162,6 +164,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         let json = render_report_json(&report);
         println!("{json}");
         write_log_json(&log, &json);
+        write_log_report_sections(&log, &report);
         if let Some(path) = &args.export_issues {
             export_issues(path, &build_issue_list(&report))?;
         }
@@ -176,6 +179,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     }
     let json = render_report_json(&report);
     write_log_json(&log, &json);
+    write_log_report_sections(&log, &report);
 
     if args.hook {
         let code = match report.verdict {
@@ -313,6 +317,36 @@ fn run_cmd_capture(program: &str, args: &[&str]) -> Result<String> {
         anyhow::bail!("{} {:?} failed: {}", program, args, stderr.trim());
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn describe_review_scope(target: &ReviewTarget, git_remote: &str) -> Result<String> {
+    let repo = Repository::discover(".")?;
+    let head_branch = repo
+        .head()
+        .ok()
+        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+        .unwrap_or_else(|| "detached".to_string());
+    let label = match target {
+        ReviewTarget::CurrentBranchWithLocal => {
+            let base = resolve_base_ref_for_current_branch(&repo, git_remote)?
+                .unwrap_or_else(|| "HEAD".to_string());
+            format!("Mode: branch+local | head: {head_branch} | base: {base}")
+        }
+        ReviewTarget::Local => format!("Mode: local | head: {head_branch}"),
+        ReviewTarget::Repo => {
+            let base = resolve_base_ref_for_current_branch(&repo, git_remote)?
+                .unwrap_or_else(|| format!("refs/remotes/{git_remote}/HEAD"));
+            format!("Mode: repo | head: {head_branch} | base: {base}")
+        }
+        ReviewTarget::Branch(base) => {
+            format!("Mode: branch | head: {head_branch} | base: {base}")
+        }
+        ReviewTarget::Files(files) => {
+            format!("Mode: files | head: {head_branch} | files: {}", files.join(", "))
+        }
+        ReviewTarget::PullRequest(pr) => format!("Mode: pr | PR: {pr}"),
+    };
+    Ok(label)
 }
 
 fn diff_worktree_vs_head(repo: &Repository) -> Result<String> {
@@ -838,8 +872,17 @@ fn open_review_log() -> Result<std::fs::File> {
     Ok(file)
 }
 
+fn log_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => format!("{}.{}", d.as_secs(), d.subsec_millis()),
+        Err(_) => "0.000".to_string(),
+    }
+}
+
 fn write_log_event(log: &Arc<Mutex<std::fs::File>>, event: &ProgressEvent) -> Result<()> {
     let mut file = log.lock().expect("log lock");
+    write!(file, "[{}] ", log_timestamp())?;
     match event {
         ProgressEvent::RunHeader {
             reviewers,
@@ -936,8 +979,22 @@ fn write_log_event(log: &Arc<Mutex<std::fs::File>>, event: &ProgressEvent) -> Re
 
 fn write_log_json(log: &Arc<Mutex<std::fs::File>>, json: &str) {
     if let Ok(mut file) = log.lock() {
-        let _ = writeln!(file, "[report]");
+        let _ = writeln!(file, "[{}] [report]", log_timestamp());
         let _ = writeln!(file, "{}", json);
+        let _ = file.flush();
+    }
+}
+
+fn write_log_report_sections(log: &Arc<Mutex<std::fs::File>>, report: &ReviewReport) {
+    if let Ok(mut file) = log.lock() {
+        if let Some(final_analysis) = &report.final_analysis_markdown {
+            let _ = writeln!(file, "[{}] [final-analysis]", log_timestamp());
+            let _ = writeln!(file, "{}", final_analysis);
+        }
+        if let Some(comment) = &report.pr_comment_markdown {
+            let _ = writeln!(file, "[{}] [pr-comment]", log_timestamp());
+            let _ = writeln!(file, "{}", comment);
+        }
         let _ = file.flush();
     }
 }
