@@ -54,11 +54,31 @@ impl Coordinator {
             phase: "analyzer".to_string(),
         });
         self.emit(ProgressEvent::AnalyzerStart);
-        let focus = self
-            .registry
-            .analyzer
-            .analyze_focus(&ctx.into_agent_ctx(None))
-            .await?;
+        let analyzer_ctx = ctx.into_agent_ctx(None);
+        let mut focus = None;
+        let analyzer_attempts: u8 = 2;
+        for attempt in 1..=analyzer_attempts {
+            match self.registry.analyzer.analyze_focus(&analyzer_ctx).await {
+                Ok(result) => {
+                    focus = Some(result);
+                    break;
+                }
+                Err(err) => {
+                    self.emit(ProgressEvent::AgentError {
+                        round: 0,
+                        id: "analyzer".to_string(),
+                        message: format!(
+                            "analyzer attempt {}/{} failed: {}",
+                            attempt, analyzer_attempts, err
+                        ),
+                    });
+                    if attempt == analyzer_attempts {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+        let focus = focus.expect("analyzer focus set");
         self.emit(ProgressEvent::AnalysisReady {
             markdown: render_analysis_markdown(&focus),
         });

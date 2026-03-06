@@ -71,13 +71,13 @@ pub async fn run_review_tui(
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut log = open_review_log()?;
     let cfg = cfg.clone();
-    let handle = tokio::spawn(async move {
+    let mut handle = Some(tokio::spawn(async move {
         if let Some(diff) = diff_override {
             libcrucible::run_review_with_progress_diff(&cfg, tx, diff).await
         } else {
             libcrucible::run_review_with_progress(&cfg, tx).await
         }
-    });
+    }));
 
     let mut screen = Screen::Analyzing;
     let mut report: Option<ReviewReport> = None;
@@ -105,7 +105,7 @@ pub async fn run_review_tui(
                         changed_lines
                     );
                     progress.run_header = Some(match progress.run_header.take() {
-                        Some(scope) => format!("{scope}\n{runtime}"),
+                        Some(scope) => format!("{scope} | {runtime}"),
                         None => runtime,
                     });
                 }
@@ -175,8 +175,9 @@ pub async fn run_review_tui(
                 ProgressEvent::AgentDone { id, .. } => {
                     progress.statuses.insert(id.clone(), AgentStatus::Done);
                 }
-                ProgressEvent::AgentError { id, .. } => {
+                ProgressEvent::AgentError { id, message, .. } => {
                     progress.statuses.insert(id.clone(), AgentStatus::Error);
+                    status_line = Some(format!("{} error: {}", id, message));
                 }
                 ProgressEvent::ConvergenceJudgment {
                     round,
@@ -213,6 +214,33 @@ pub async fn run_review_tui(
                 _ => {}
             }
             write_log_event(&mut log, &event);
+        }
+
+        if report.is_none() && exit_code.is_none() {
+            if let Some(h) = &handle {
+                if h.is_finished() {
+                    let h = handle.take().expect("join handle exists");
+                    match h.await.context("review task join")? {
+                        Ok(rep) => {
+                            let json = render_report_json(&rep);
+                            write_log_json(&mut log, &json);
+                            write_log_report_sections(&mut log, &rep);
+                            report = Some(rep.clone());
+                            screen = Screen::Review;
+                            if !interactive {
+                                exit_code = Some(match rep.verdict {
+                                    Verdict::Block => 1,
+                                    _ => 0,
+                                });
+                            }
+                        }
+                        Err(err) => {
+                            status_line = Some(format!("Review failed: {err}"));
+                            exit_code = Some(1);
+                        }
+                    }
+                }
+            }
         }
 
         terminal.draw(|f| {
@@ -289,10 +317,15 @@ pub async fn run_review_tui(
     stdout().execute(LeaveAlternateScreen)?;
 
     if let Some(code) = exit_code {
-        handle.abort();
+        if let Some(h) = handle.take() {
+            h.abort();
+        }
         return Ok(code);
     }
 
+    let Some(handle) = handle else {
+        return Ok(1);
+    };
     let report = match handle.await.context("review task join")? {
         Ok(rep) => rep,
         Err(err) => {

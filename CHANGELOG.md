@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.19 - 2026-03-06
+
+- Added analyzer retry on parse/schema failures before aborting the run.
+- Fixed TUI behavior to detect failed review tasks and exit with an error instead of hanging on analyzer/finalize phases.
+- Improved TUI run header formatting for review scope + runtime metadata.
+
 ## 0.1.18 - 2026-03-06
 
 - Added explicit `[final-analysis]` and `[pr-comment]` sections to `review_report.log` output.
