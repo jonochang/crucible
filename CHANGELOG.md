@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.16 - 2026-03-06
+
+- Removed `git` CLI dependency from local/repo/branch/files diff paths by using `libgit2` directly.
+- Reworked BDD repo setup to use `git2` APIs instead of spawning `git`.
+- Added `gh` runtime dependency to packaged `crucible` binary via wrapper.
+
 ## 0.1.15 - 2026-03-06
 
 - Updated untangle prechecks to use supported commands: `untangle analyze` and `untangle quality --metric crap`.

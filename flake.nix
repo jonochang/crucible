@@ -4,26 +4,31 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
-    untangle.url = "github:jonochang/untangle";
-    untangle.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, untangle }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
-        untanglePkg = untangle.packages.${system}.default.overrideAttrs (old: {
+        untanglePkg = pkgs.rustPlatform.buildRustPackage {
+          pname = "untangle";
+          version = "0.3.0";
           src = pkgs.fetchFromGitHub {
             owner = "jonochang";
             repo = "untangle";
-            rev = "v${old.version}";
+            rev = "v0.3.0";
             hash = "sha256-zHhk6f50bjiRi0PnY3YWcVvlzhj8q1NLroPxDVYOP7o=";
           };
+          cargoHash = "sha256-5ktLAOiQJkreKVlnsEOGXF8Amrhc56BAYod4ziFVQYc=";
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.cmake ];
+          buildInputs = [ pkgs.openssl pkgs.libgit2 pkgs.zlib ];
+          OPENSSL_NO_VENDOR = "1";
+          LIBGIT2_NO_VENDOR = "1";
           doCheck = false;
-        });
+        };
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "clippy" "rustfmt" "rust-src" ];
         };
@@ -40,7 +45,7 @@
             pkgs.openssl pkgs.libgit2
             pkgs.cargo-nextest pkgs.cargo-deny
             pkgs.cargo-llvm-cov pkgs.cargo-insta
-            pkgs.mdbook pkgs.git
+            pkgs.mdbook pkgs.git pkgs.gh
             untanglePkg
           ];
           LIBGIT2_NO_VENDOR = "1";

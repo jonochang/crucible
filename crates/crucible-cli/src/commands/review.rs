@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Args;
+use git2::{DiffFormat, DiffOptions, Repository};
 use libcrucible::config::CrucibleConfig;
 use libcrucible::progress::{ConvergenceVerdict, ProgressEvent, ReviewerState};
 use libcrucible::report::{CanonicalIssue, ReviewReport, Severity, Verdict};
@@ -198,36 +199,36 @@ enum ReviewTarget {
 /// Resolve the concrete diff content for the selected target mode.
 /// Returns `Ok(None)` only for empty local diffs so callers can skip gracefully.
 fn resolve_review_diff(target: &ReviewTarget, git_remote: &str) -> Result<Option<String>> {
+    let repo = Repository::discover(".")?;
     match target {
         ReviewTarget::Local => {
-            let diff = run_git_capture(&["diff", "HEAD"])?;
+            let diff = diff_worktree_vs_head(&repo)?;
             if diff.trim().is_empty() {
                 return Ok(None);
             }
             Ok(Some(diff))
         }
         ReviewTarget::Repo => {
-            let base_branch = resolve_remote_default_branch(git_remote)?;
-            let range = format!("{git_remote}/{base_branch}...HEAD");
-            let diff = run_git_capture(&["diff", range.as_str()])?;
+            let base_branch = resolve_remote_default_branch(&repo, git_remote)?;
+            let base_ref = format!("refs/remotes/{git_remote}/{base_branch}");
+            let diff = diff_three_dot_refs(&repo, &base_ref, "HEAD")?;
             if diff.trim().is_empty() {
-                anyhow::bail!("no repo diff found for range {}", range);
+                anyhow::bail!(
+                    "no repo diff found for range {}...HEAD",
+                    format!("{git_remote}/{base_branch}")
+                );
             }
             Ok(Some(diff))
         }
         ReviewTarget::Branch(base) => {
-            let range = format!("{base}...HEAD");
-            let diff = run_git_capture(&["diff", range.as_str()])?;
+            let diff = diff_three_dot_refs(&repo, base, "HEAD")?;
             if diff.trim().is_empty() {
-                anyhow::bail!("no branch diff found for range {}", range);
+                anyhow::bail!("no branch diff found for range {}...HEAD", base);
             }
             Ok(Some(diff))
         }
         ReviewTarget::Files(files) => {
-            let mut args = vec!["diff", "HEAD", "--"];
-            let owned = files.iter().map(String::as_str).collect::<Vec<_>>();
-            args.extend(owned);
-            let diff = run_git_capture(&args)?;
+            let diff = diff_worktree_vs_head_for_files(&repo, files)?;
             if diff.trim().is_empty() {
                 anyhow::bail!("no diff found for requested files");
             }
@@ -244,12 +245,17 @@ fn resolve_review_diff(target: &ReviewTarget, git_remote: &str) -> Result<Option
     }
 }
 
-fn resolve_remote_default_branch(git_remote: &str) -> Result<String> {
+fn resolve_remote_default_branch(repo: &Repository, git_remote: &str) -> Result<String> {
     let ref_name = format!("refs/remotes/{git_remote}/HEAD");
-    let symref = run_git_capture(&["symbolic-ref", ref_name.as_str()])?;
+    let reference = repo.find_reference(&ref_name)?;
+    let target = reference
+        .symbolic_target()
+        .ok_or_else(|| anyhow::anyhow!("remote HEAD is not symbolic for {}", git_remote))?;
     let prefix = format!("refs/remotes/{git_remote}/");
-    let branch = symref.trim().strip_prefix(&prefix).unwrap_or("main");
-    Ok(branch.to_string())
+    Ok(target
+        .strip_prefix(&prefix)
+        .unwrap_or("main")
+        .to_string())
 }
 
 /// Checkout the PR branch into the current repository using GitHub CLI.
@@ -263,11 +269,6 @@ fn checkout_pr_branch(pr: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run a git command and capture stdout as UTF-8.
-fn run_git_capture(args: &[&str]) -> Result<String> {
-    run_cmd_capture("git", args)
-}
-
 /// Run a command and capture stdout, surfacing stderr on failure.
 fn run_cmd_capture(program: &str, args: &[&str]) -> Result<String> {
     let output = std::process::Command::new(program).args(args).output()?;
@@ -276,6 +277,52 @@ fn run_cmd_capture(program: &str, args: &[&str]) -> Result<String> {
         anyhow::bail!("{} {:?} failed: {}", program, args, stderr.trim());
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn diff_worktree_vs_head(repo: &Repository) -> Result<String> {
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true);
+    let diff = repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
+    render_diff_to_patch(&diff)
+}
+
+fn diff_worktree_vs_head_for_files(repo: &Repository, files: &[String]) -> Result<String> {
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true);
+    for file in files {
+        opts.pathspec(file);
+    }
+    let diff = repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
+    render_diff_to_patch(&diff)
+}
+
+fn diff_three_dot_refs(repo: &Repository, base_ref: &str, head_ref: &str) -> Result<String> {
+    let base_commit = peel_commit(repo, base_ref)?;
+    let head_commit = peel_commit(repo, head_ref)?;
+    let merge_base = repo.merge_base(base_commit.id(), head_commit.id())?;
+    let merge_base_tree = repo.find_commit(merge_base)?.tree()?;
+    let head_tree = head_commit.tree()?;
+    let diff = repo.diff_tree_to_tree(Some(&merge_base_tree), Some(&head_tree), None)?;
+    render_diff_to_patch(&diff)
+}
+
+fn peel_commit<'a>(repo: &'a Repository, reference: &str) -> Result<git2::Commit<'a>> {
+    let obj = repo.revparse_single(reference)?;
+    let commit = obj.peel_to_commit()?;
+    Ok(commit)
+}
+
+fn render_diff_to_patch(diff: &git2::Diff<'_>) -> Result<String> {
+    let mut out = String::new();
+    diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+        if let Ok(content) = std::str::from_utf8(line.content()) {
+            out.push_str(content);
+        }
+        true
+    })?;
+    Ok(out)
 }
 
 fn count_changed_lines(diff: &str) -> usize {

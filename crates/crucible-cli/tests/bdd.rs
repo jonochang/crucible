@@ -1,5 +1,6 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use cucumber::{World, given, then, when};
+use git2::{IndexAddOption, Repository, Signature};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -33,24 +34,49 @@ fn init_git_repo(world: &mut CliWorld) {
         .temp_dir
         .get_or_insert_with(|| TempDir::new().expect("temp dir"));
     let repo_dir = temp_dir.path();
-    run_git(&["init"], repo_dir);
-    run_git(&["config", "user.email", "bdd@example.com"], repo_dir);
-    run_git(&["config", "user.name", "BDD Runner"], repo_dir);
+    let repo = Repository::init(repo_dir).expect("init repo");
+    repo.config()
+        .and_then(|mut cfg| cfg.set_str("user.email", "bdd@example.com"))
+        .expect("set git email");
+    repo.config()
+        .and_then(|mut cfg| cfg.set_str("user.name", "BDD Runner"))
+        .expect("set git name");
     let readme = repo_dir.join("README.md");
     std::fs::write(&readme, "Hello\n").expect("write README");
-    run_git(&["add", "README.md"], repo_dir);
-    run_git(&["commit", "-m", "init"], repo_dir);
+    commit_all(&repo, "init");
     std::fs::write(&readme, "Hello\nWorld\n").expect("update README");
     world.repo_dir = Some(repo_dir.to_path_buf());
 }
 
-fn run_git(args: &[&str], cwd: &Path) {
-    let status = std::process::Command::new("git")
-        .current_dir(cwd)
-        .args(args)
-        .status()
-        .expect("run git");
-    assert!(status.success(), "git command failed: {:?}", args);
+fn commit_all(repo: &Repository, message: &str) {
+    let mut index = repo.index().expect("index");
+    index
+        .add_all(["*"], IndexAddOption::DEFAULT, None)
+        .expect("add all");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let signature = Signature::now("BDD Runner", "bdd@example.com").expect("signature");
+
+    let parent = repo
+        .head()
+        .ok()
+        .and_then(|h| h.target())
+        .and_then(|oid| repo.find_commit(oid).ok());
+    let parents: Vec<&git2::Commit<'_>> = match parent.as_ref() {
+        Some(p) => vec![p],
+        None => Vec::new(),
+    };
+
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        message,
+        &tree,
+        &parents,
+    )
+    .expect("commit");
 }
 
 fn write_mock_agent_config(world: &mut CliWorld, sleep_secs: Option<u64>) {

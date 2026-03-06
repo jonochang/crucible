@@ -9,8 +9,10 @@ let
   libgit2 = pkgs.libgit2;
   pkgconfig = pkgs.pkg-config;
   cmake = pkgs.cmake;
+  makeWrapper = pkgs.makeWrapper;
+  gh = pkgs.gh;
   buildInputs = [ openssl libgit2 ];
-  nativeBuildInputs = [ pkgconfig cmake ];
+  nativeBuildInputs = [ pkgconfig cmake makeWrapper ];
   env = {
     OPENSSL_DIR = "${openssl.dev}";
     OPENSSL_LIB_DIR = "${openssl.out}/lib";
@@ -19,9 +21,12 @@ let
   };
   in rustPlatform.buildRustPackage ({
     pname = "crucible";
-    version = "0.1.15";
+    version = "0.1.16";
     inherit src buildInputs nativeBuildInputs;
     cargoLock.lockFile = ./Cargo.lock;
     cargoBuildFlags = [ "-p" "crucible-cli" ];
+    postInstall = ''
+      wrapProgram $out/bin/crucible --prefix PATH : ${pkgs.lib.makeBinPath [ gh ]}
+    '';
     meta.mainProgram = "crucible";
   } // env)
