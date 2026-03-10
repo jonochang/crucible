@@ -46,6 +46,7 @@ pub fn render_report_json(report: &ReviewReport) -> String {
                 "auto_fix": report.auto_fix,
                 "final_action_plan": report.final_action_plan,
                 "pr_comment_markdown": report.pr_comment_markdown,
+                "pr_review_draft": report.pr_review_draft,
                 "session_id": report.session_id
             }))
             .unwrap_or_else(|_| "{}".to_string())

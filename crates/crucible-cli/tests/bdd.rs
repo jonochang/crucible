@@ -13,6 +13,7 @@ struct CliWorld {
     repo_dir: Option<PathBuf>,
     export_path: Option<PathBuf>,
     report_path: Option<PathBuf>,
+    github_payload_path: Option<PathBuf>,
     interrupt_status: Option<i32>,
     interrupt_stderr: Option<String>,
 }
@@ -21,6 +22,15 @@ fn run_cmd(args: &[&str], cwd: Option<&Path>) -> std::process::Output {
     let mut cmd = cargo_bin_cmd!("crucible");
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
+        let gh_path = dir.join("gh");
+        if gh_path.exists() {
+            let existing = std::env::var_os("PATH").unwrap_or_default();
+            let joined = std::env::join_paths(
+                std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&existing)),
+            )
+            .expect("join PATH");
+            cmd.env("PATH", joined);
+        }
     }
     cmd.args(args).output().expect("run crucible command")
 }
@@ -235,6 +245,109 @@ role_weight = 1.0
     std::fs::write(repo_dir.join(".crucible.toml"), config).expect("write config");
 }
 
+fn write_mock_gh(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let payload_path = repo_dir.join("gh-review-payload.json");
+    let script = format!(
+        r#"#!/usr/bin/env sh
+set -eu
+payload="{payload}"
+cmd="$1"
+shift
+case "$cmd" in
+  pr)
+    sub="$1"
+    shift
+    case "$sub" in
+      checkout)
+        exit 0
+        ;;
+      diff)
+        cat <<'DIFF'
+diff --git a/README.md b/README.md
+index e965047..f9264f7 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,2 @@
+ Hello
++World
+DIFF
+        ;;
+      view)
+        cat <<'JSON'
+{{"number":123,"url":"https://github.com/example/repo/pull/123","headRefOid":"0123456789abcdef0123456789abcdef01234567"}}
+JSON
+        ;;
+      *)
+        echo "unexpected gh pr subcommand: $sub" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  repo)
+    sub="$1"
+    shift
+    case "$sub" in
+      view)
+        cat <<'JSON'
+{{"nameWithOwner":"example/repo","url":"https://github.com/example/repo"}}
+JSON
+        ;;
+      *)
+        echo "unexpected gh repo subcommand: $sub" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  api)
+    method="GET"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --method)
+          method="$2"
+          shift 2
+          ;;
+        --input)
+          input="$2"
+          shift 2
+          ;;
+        *)
+          endpoint="$1"
+          shift
+          ;;
+      esac
+    done
+    if [ "$method" = "GET" ]; then
+      printf '[]\n'
+      exit 0
+    fi
+    if [ "${{input:-}}" = "-" ]; then
+      cat > "$payload"
+    fi
+    cat <<'JSON'
+{{"html_url":"https://github.com/example/repo/pull/123#pullrequestreview-1"}}
+JSON
+    ;;
+  *)
+    echo "unexpected gh command: $cmd" >&2
+    exit 1
+    ;;
+esac
+"#,
+        payload = payload_path.display()
+    );
+    let gh_path = repo_dir.join("gh");
+    std::fs::write(&gh_path, script).expect("write mock gh");
+    let mut perms = std::fs::metadata(&gh_path).expect("metadata").permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&gh_path, perms).expect("set permissions");
+    }
+    world.github_payload_path = Some(payload_path);
+}
+
 #[when("I run config init")]
 fn run_config_init(world: &mut CliWorld) {
     let temp_dir = world.temp_dir.as_ref().expect("temp dir");
@@ -268,6 +381,11 @@ fn real_agent_config(world: &mut CliWorld) {
     write_real_agent_config(world);
 }
 
+#[given("a mock GitHub CLI")]
+fn mock_github_cli(world: &mut CliWorld) {
+    write_mock_gh(world);
+}
+
 #[when("I run review")]
 fn run_review(world: &mut CliWorld) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
@@ -295,6 +413,44 @@ fn run_review_with_report_export(world: &mut CliWorld) {
     let report_arg = report_path.display().to_string();
     let output = run_cmd(
         &["review", "--output-report", report_arg.as_str()],
+        Some(repo_dir),
+    );
+    world.report_path = Some(report_path);
+    world.output = Some(output);
+}
+
+#[when("I run PR review with GitHub dry-run")]
+fn run_pr_review_with_github_dry_run(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let report_path = repo_dir.join("pr-report.json");
+    let report_arg = report_path.display().to_string();
+    let output = run_cmd(
+        &[
+            "review",
+            "123",
+            "--output-report",
+            report_arg.as_str(),
+            "--github-dry-run",
+        ],
+        Some(repo_dir),
+    );
+    world.report_path = Some(report_path);
+    world.output = Some(output);
+}
+
+#[when("I run PR review and publish GitHub review")]
+fn run_pr_review_and_publish(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let report_path = repo_dir.join("published-pr-report.json");
+    let report_arg = report_path.display().to_string();
+    let output = run_cmd(
+        &[
+            "review",
+            "123",
+            "--output-report",
+            report_arg.as_str(),
+            "--publish-github",
+        ],
         Some(repo_dir),
     );
     world.report_path = Some(report_path);
@@ -456,6 +612,75 @@ fn full_report_artifact_written(world: &mut CliWorld) {
     assert!(
         json.get("analysis_markdown").is_some(),
         "analysis_markdown missing"
+    );
+}
+
+#[then("run-scoped artifacts are written")]
+fn run_scoped_artifacts_are_written(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let runs_dir = repo_dir.join(".crucible").join("runs");
+    assert!(runs_dir.exists(), "run-scoped artifact directory missing");
+    let mut found_progress = false;
+    let mut found_report = false;
+    for entry in std::fs::read_dir(runs_dir).expect("read run artifacts dir") {
+        let entry = entry.expect("run entry");
+        if !entry.path().is_dir() {
+            continue;
+        }
+        found_progress |= entry.path().join("progress.log").exists();
+        found_report |= entry.path().join("report.json").exists();
+    }
+    assert!(found_progress, "run-scoped progress log missing");
+    assert!(found_report, "run-scoped report missing");
+}
+
+#[then("the GitHub dry-run output includes inline comments")]
+fn github_dry_run_output_includes_inline_comments(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("GitHub review dry run"));
+    assert!(stdout.contains("Inline comments:"));
+    assert!(stdout.contains("README.md"));
+    assert!(stdout.contains("Raised by: claude-code"));
+}
+
+#[then("the report includes a structured PR review draft")]
+fn report_includes_structured_pr_review_draft(world: &mut CliWorld) {
+    let report_path = world.report_path.as_ref().expect("report path");
+    let raw = std::fs::read_to_string(report_path).expect("read report export");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("parse report export json");
+    let draft = json
+        .get("pr_review_draft")
+        .expect("pr_review_draft missing from report");
+    let inline = draft
+        .get("inline_comments")
+        .and_then(|v| v.as_array())
+        .expect("inline comments array");
+    assert!(!inline.is_empty(), "inline comments should not be empty");
+}
+
+#[then("the GitHub review payload is posted")]
+fn github_review_payload_posted(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let payload_path = world
+        .github_payload_path
+        .as_ref()
+        .expect("github payload capture path");
+    assert!(
+        payload_path.exists(),
+        "GitHub review payload was not captured"
+    );
+    let raw = std::fs::read_to_string(payload_path).expect("read GitHub payload");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("parse GitHub payload");
+    assert!(json.get("body").is_some(), "review body missing");
+    assert!(
+        json.get("comments")
+            .and_then(|v| v.as_array())
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false),
+        "review comments missing"
     );
 }
 

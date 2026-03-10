@@ -5,12 +5,15 @@ use git2::{DiffFormat, DiffOptions, Repository};
 use libcrucible::config::CrucibleConfig;
 use libcrucible::progress::ProgressEvent;
 use libcrucible::report::{CanonicalIssue, ReviewReport, Severity, Verdict};
+use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 #[derive(Args)]
 pub struct ReviewArgs {
@@ -27,6 +30,16 @@ pub struct ReviewArgs {
     pub export_issues: Option<PathBuf>,
     #[arg(long, help = "Write the full review report to a file (.json)")]
     pub output_report: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Render the GitHub review payload without posting it (PR target only)"
+    )]
+    pub github_dry_run: bool,
+    #[arg(
+        long,
+        help = "Publish the review to GitHub as a PR review (PR target only)"
+    )]
+    pub publish_github: bool,
     #[arg(long, help = "Enable verbose CLI agent logging")]
     pub verbose: bool,
     #[arg(long, help = "Enable debug logging to crucible.log")]
@@ -62,11 +75,18 @@ pub struct ReviewArgs {
 }
 
 pub async fn run(args: ReviewArgs) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let run_id = Uuid::new_v4();
+    let artifacts = libcrucible::artifacts::RunArtifacts::create(&cwd, run_id)?;
     if args.debug {
-        let path = std::env::current_dir()?.join("crucible.log");
+        let path = artifacts.debug_log.clone();
         std::fs::write(&path, b"")?;
         libcrucible::plugins::set_debug_log(&path)?;
-        eprintln!("Debug logging enabled: {}", path.display());
+        eprintln!(
+            "Debug logging enabled: {} (run {})",
+            path.display(),
+            artifacts.run_id
+        );
     }
     if args.verbose {
         libcrucible::plugins::set_verbose(true);
@@ -83,6 +103,9 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     }
     if let Some(rounds) = args.max_rounds {
         cfg.coordinator.max_rounds = rounds.max(1);
+    }
+    if args.github_dry_run && args.publish_github {
+        anyhow::bail!("choose only one GitHub action: --github-dry-run or --publish-github");
     }
     let mode_count = u8::from(args.local)
         + u8::from(args.repo)
@@ -110,6 +133,11 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     } else {
         ReviewTarget::CurrentBranchWithLocal
     };
+    if (args.github_dry_run || args.publish_github)
+        && !matches!(target, ReviewTarget::PullRequest(_))
+    {
+        anyhow::bail!("GitHub review actions require a PR target");
+    }
     let diff_override = resolve_review_diff(&target, &args.git_remote)?;
     if matches!(
         target,
@@ -122,8 +150,12 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         }
     }
 
-    let use_tui =
-        !args.hook && args.export_issues.is_none() && !args.json && std::io::stdout().is_terminal();
+    let use_tui = !args.hook
+        && args.export_issues.is_none()
+        && !args.json
+        && !args.github_dry_run
+        && !args.publish_github
+        && std::io::stdout().is_terminal();
     if use_tui {
         let scope_label = describe_review_scope(&target, &args.git_remote)
             .unwrap_or_else(|_| "scope unavailable".to_string());
@@ -133,27 +165,37 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
             diff_override.clone(),
             scope_label,
             args.output_report.clone(),
+            artifacts.clone(),
         )
         .await?;
         std::process::exit(exit_code);
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let log = open_review_log()?;
+    let log = open_review_log(&artifacts)?;
     let log = Arc::new(Mutex::new(log));
     let cfg_for_review = cfg.clone();
+    let run_id_for_review = artifacts.run_id;
     let mut review_handle = tokio::spawn(async move {
         if let Some(diff) = diff_override {
-            libcrucible::run_review_with_progress_diff(&cfg_for_review, tx, diff).await
+            libcrucible::run_review_with_progress_diff_run_id(
+                &cfg_for_review,
+                tx,
+                diff,
+                run_id_for_review,
+            )
+            .await
         } else {
-            libcrucible::run_review_with_progress(&cfg_for_review, tx).await
+            libcrucible::run_review_with_progress_run_id(&cfg_for_review, tx, run_id_for_review)
+                .await
         }
     });
     let log_for_progress = log.clone();
+    let run_id_for_progress = artifacts.run_id;
     let progress_handle = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            emit_progress(&event);
-            let _ = write_log_event(&log_for_progress, &event);
+            emit_progress(run_id_for_progress, &event);
+            let _ = write_log_event(&log_for_progress, run_id_for_progress, &event);
         }
     });
 
@@ -164,8 +206,8 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
             report
         }
         _ = tokio::signal::ctrl_c() => {
-            emit_progress(&ProgressEvent::Canceled);
-            let _ = write_log_event(&log, &ProgressEvent::Canceled);
+            emit_progress(artifacts.run_id, &ProgressEvent::Canceled);
+            let _ = write_log_event(&log, artifacts.run_id, &ProgressEvent::Canceled);
             review_handle.abort();
             std::process::exit(130);
         }
@@ -174,13 +216,24 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     if args.json {
         let json = render_report_json(&report);
         println!("{json}");
-        if let Some(path) = &args.output_report {
-            write_report(path, &json)?;
-        }
-        write_log_json(&log, &json);
-        write_log_report_sections(&log, &report);
+        write_report_targets(&artifacts, args.output_report.as_ref(), &json)?;
+        write_log_json(&log, artifacts.run_id, &json);
+        write_log_report_sections(&log, artifacts.run_id, &report);
         if let Some(path) = &args.export_issues {
             export_issues(path, &build_issue_list(&report))?;
+        }
+        if args.github_dry_run || args.publish_github {
+            let pr = match &target {
+                ReviewTarget::PullRequest(pr) => pr,
+                _ => unreachable!("validated PR target above"),
+            };
+            handle_github_review_action(
+                &report,
+                pr,
+                args.github_dry_run,
+                args.publish_github,
+                true,
+            )?;
         }
         return Ok(());
     }
@@ -192,12 +245,20 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         println!("\nExported issues to {}", path.display());
     }
     let json = render_report_json(&report);
+    write_report_targets(&artifacts, args.output_report.as_ref(), &json)?;
     if let Some(path) = &args.output_report {
-        write_report(path, &json)?;
         println!("Report written to {}", path.display());
     }
-    write_log_json(&log, &json);
-    write_log_report_sections(&log, &report);
+    println!("Run artifacts: {}", artifacts.run_dir.display());
+    write_log_json(&log, artifacts.run_id, &json);
+    write_log_report_sections(&log, artifacts.run_id, &report);
+    if args.github_dry_run || args.publish_github {
+        let pr = match &target {
+            ReviewTarget::PullRequest(pr) => pr,
+            _ => unreachable!("validated PR target above"),
+        };
+        handle_github_review_action(&report, pr, args.github_dry_run, args.publish_github, false)?;
+    }
 
     if args.hook {
         let code = match report.verdict {
@@ -224,6 +285,35 @@ enum ReviewTarget {
     Files(Vec<String>),
     /// Review a GitHub pull request (number or URL).
     PullRequest(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct GhPrView {
+    number: u64,
+    url: String,
+    #[serde(rename = "headRefOid")]
+    head_ref_oid: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhRepoView {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+}
+
+#[derive(Debug)]
+struct GithubReviewContext {
+    number: u64,
+    url: String,
+    repo: String,
+    head_sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExistingGithubReview {
+    body: Option<String>,
+    #[serde(rename = "html_url")]
+    html_url: Option<String>,
 }
 
 /// Resolve the concrete diff content for the selected target mode.
@@ -334,6 +424,29 @@ fn run_cmd_capture(program: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn run_cmd_capture_with_stdin(program: &str, args: &[&str], stdin: &str) -> Result<String> {
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(input) = child.stdin.as_mut() {
+        input.write_all(stdin.as_bytes())?;
+    }
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("{} {:?} failed: {}", program, args, stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn run_cmd_capture_json<T: for<'de> Deserialize<'de>>(program: &str, args: &[&str]) -> Result<T> {
+    let stdout = run_cmd_capture(program, args)?;
+    Ok(serde_json::from_str(&stdout)?)
+}
+
 fn describe_review_scope(target: &ReviewTarget, git_remote: &str) -> Result<String> {
     let repo = Repository::discover(".")?;
     let head_branch = repo
@@ -426,6 +539,184 @@ fn render_diff_to_patch(diff: &git2::Diff<'_>) -> Result<String> {
         true
     })?;
     Ok(out)
+}
+
+fn resolve_github_review_context(pr: &str) -> Result<GithubReviewContext> {
+    let pr_view: GhPrView =
+        run_cmd_capture_json("gh", &["pr", "view", pr, "--json", "number,url,headRefOid"])?;
+    let repo_view: GhRepoView =
+        run_cmd_capture_json("gh", &["repo", "view", "--json", "nameWithOwner"])?;
+    Ok(GithubReviewContext {
+        number: pr_view.number,
+        url: pr_view.url,
+        repo: repo_view.name_with_owner,
+        head_sha: pr_view.head_ref_oid,
+    })
+}
+
+fn handle_github_review_action(
+    report: &ReviewReport,
+    pr: &str,
+    github_dry_run: bool,
+    publish_github: bool,
+    use_stderr: bool,
+) -> Result<()> {
+    let ctx = resolve_github_review_context(pr)?;
+    if github_dry_run {
+        let rendered = render_github_dry_run(report, &ctx)?;
+        if use_stderr {
+            eprintln!("{rendered}");
+        } else {
+            println!("\n{rendered}");
+        }
+        return Ok(());
+    }
+    if publish_github {
+        match publish_github_review(report, &ctx)? {
+            Some(url) => {
+                if use_stderr {
+                    eprintln!("Published GitHub review: {url}");
+                } else {
+                    println!("\nPublished GitHub review: {url}");
+                }
+            }
+            None => {
+                if use_stderr {
+                    eprintln!(
+                        "Skipped GitHub review publish; matching review already exists for {}",
+                        ctx.url
+                    );
+                } else {
+                    println!(
+                        "\nSkipped GitHub review publish; matching review already exists for {}",
+                        ctx.url
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn render_github_dry_run(report: &ReviewReport, ctx: &GithubReviewContext) -> Result<String> {
+    let draft = report
+        .pr_review_draft
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("report did not include a PR review draft"))?;
+    let mut out = format!(
+        "GitHub review dry run\nPR: {}\nRepo: {}\nInline comments: {}\nOverview-only comments: {}\n",
+        ctx.url,
+        ctx.repo,
+        draft.inline_comments.len(),
+        draft.overview_only_comments.len()
+    );
+    out.push_str("\nOverview:\n");
+    out.push_str(&draft.overview_comment.body);
+    out.push_str("\n\nInline comments:\n");
+    for comment in &draft.inline_comments {
+        let path = comment
+            .path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let line = comment
+            .line
+            .map(|line| line.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        out.push_str(&format!(
+            "- {}:{} {}\n{}\n",
+            path, line, comment.title, comment.body
+        ));
+    }
+    if !draft.overview_only_comments.is_empty() {
+        out.push_str("\nOverview-only comments:\n");
+        for comment in &draft.overview_only_comments {
+            out.push_str(&format!(
+                "- {} ({})\n",
+                comment.title,
+                comment.mapping_note.clone().unwrap_or_default()
+            ));
+        }
+    }
+    Ok(out)
+}
+
+fn publish_github_review(
+    report: &ReviewReport,
+    ctx: &GithubReviewContext,
+) -> Result<Option<String>> {
+    let draft = report
+        .pr_review_draft
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("report did not include a PR review draft"))?;
+    let marker = format!("<!-- crucible-head:{} -->", ctx.head_sha);
+    let endpoint = format!("repos/{}/pulls/{}/reviews", ctx.repo, ctx.number);
+    let existing: Vec<ExistingGithubReview> =
+        run_cmd_capture_json("gh", &["api", endpoint.as_str()])?;
+    if existing
+        .iter()
+        .any(|review| review.body.as_deref().unwrap_or("").contains(&marker))
+    {
+        let _ = existing
+            .iter()
+            .find_map(|review| review.html_url.as_deref());
+        return Ok(None);
+    }
+
+    let mut body = draft.overview_comment.body.clone();
+    if !draft.overview_only_comments.is_empty() {
+        body.push_str("\n\n### Additional Issues Not Mapped To Diff Hunks\n");
+        for comment in &draft.overview_only_comments {
+            body.push_str(&format!(
+                "- **{}**: {}\n",
+                comment.title, comment.description
+            ));
+        }
+    }
+    body.push_str(&format!(
+        "\n\n<!-- crucible-run:{} -->\n{}\n",
+        report.run_id, marker
+    ));
+
+    let comments = draft
+        .inline_comments
+        .iter()
+        .filter_map(|comment| {
+            Some(serde_json::json!({
+                "path": comment.path.as_ref()?.display().to_string(),
+                "body": comment.body,
+                "line": comment.line?,
+                "side": match comment.side? {
+                    libcrucible::report::PullRequestCommentSide::Left => "LEFT",
+                    libcrucible::report::PullRequestCommentSide::Right => "RIGHT",
+                },
+                "start_line": comment.start_line,
+                "start_side": comment.start_side.map(|side| match side {
+                    libcrucible::report::PullRequestCommentSide::Left => "LEFT",
+                    libcrucible::report::PullRequestCommentSide::Right => "RIGHT",
+                }),
+            }))
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::to_string_pretty(&serde_json::json!({
+        "body": body,
+        "event": "COMMENT",
+        "commit_id": ctx.head_sha,
+        "comments": comments,
+    }))?;
+    let response = run_cmd_capture_with_stdin(
+        "gh",
+        &["api", "--method", "POST", endpoint.as_str(), "--input", "-"],
+        &payload,
+    )?;
+    let response_json: serde_json::Value = serde_json::from_str(&response)?;
+    Ok(Some(
+        response_json
+            .get("html_url")
+            .and_then(|value| value.as_str())
+            .unwrap_or(&ctx.url)
+            .to_string(),
+    ))
 }
 
 fn count_changed_lines(diff: &str) -> usize {
@@ -745,8 +1036,10 @@ fn export_issues(path: &std::path::Path, issues: &[IssueRow]) -> Result<()> {
     Ok(())
 }
 
-fn emit_progress(event: &ProgressEvent) {
+fn emit_progress(run_id: Uuid, event: &ProgressEvent) {
     render_spinner_status(event);
+    eprint!("[run:{}] ", run_id);
+    let _ = std::io::stderr().flush();
     match event {
         ProgressEvent::RunHeader {
             reviewers,
@@ -919,30 +1212,49 @@ fn render_spinner_status(event: &ProgressEvent) {
     let _ = std::io::stderr().flush();
 }
 
-fn open_review_log() -> Result<std::fs::File> {
-    let path = std::env::current_dir()?.join("review_report.log");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    Ok(file)
+struct ReviewLog {
+    sinks: Vec<File>,
 }
 
-fn write_log_event(log: &Arc<Mutex<std::fs::File>>, event: &ProgressEvent) -> Result<()> {
+fn open_review_log(artifacts: &libcrucible::artifacts::RunArtifacts) -> Result<ReviewLog> {
+    let legacy_path = std::env::current_dir()?.join("review_report.log");
+    let legacy = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(legacy_path)?;
+    let scoped = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&artifacts.progress_log)?;
+    Ok(ReviewLog {
+        sinks: vec![legacy, scoped],
+    })
+}
+
+fn write_log_event(log: &Arc<Mutex<ReviewLog>>, run_id: Uuid, event: &ProgressEvent) -> Result<()> {
     let mut file = log.lock().expect("log lock");
-    log_helpers::write_log_event(&mut *file, event);
+    for sink in &mut file.sinks {
+        let _ = write!(sink, "[run:{}] ", run_id);
+        log_helpers::write_log_event(sink, event);
+    }
     Ok(())
 }
 
-fn write_log_json(log: &Arc<Mutex<std::fs::File>>, json: &str) {
+fn write_log_json(log: &Arc<Mutex<ReviewLog>>, run_id: Uuid, json: &str) {
     if let Ok(mut file) = log.lock() {
-        log_helpers::write_log_json(&mut *file, json);
+        for sink in &mut file.sinks {
+            let _ = writeln!(sink, "[run:{}]", run_id);
+            log_helpers::write_log_json(sink, json);
+        }
     }
 }
 
-fn write_log_report_sections(log: &Arc<Mutex<std::fs::File>>, report: &ReviewReport) {
+fn write_log_report_sections(log: &Arc<Mutex<ReviewLog>>, run_id: Uuid, report: &ReviewReport) {
     if let Ok(mut file) = log.lock() {
-        log_helpers::write_log_report_sections(&mut *file, report);
+        for sink in &mut file.sinks {
+            let _ = writeln!(sink, "[run:{}]", run_id);
+            log_helpers::write_log_report_sections(sink, report);
+        }
     }
 }
 
@@ -952,6 +1264,20 @@ fn render_report_json(report: &ReviewReport) -> String {
 
 fn write_report(path: &std::path::Path, json: &str) -> Result<()> {
     std::fs::write(path, json)?;
+    Ok(())
+}
+
+fn write_report_targets(
+    artifacts: &libcrucible::artifacts::RunArtifacts,
+    explicit: Option<&PathBuf>,
+    json: &str,
+) -> Result<()> {
+    write_report(&artifacts.report_json, json)?;
+    if let Some(path) = explicit {
+        if path != &artifacts.report_json {
+            write_report(path, json)?;
+        }
+    }
     Ok(())
 }
 
@@ -1024,6 +1350,7 @@ mod tests {
                 block_on: "Critical".to_string(),
             },
             ConsensusMap::default(),
+            None,
             None,
             None,
             None,

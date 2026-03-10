@@ -39,6 +39,22 @@ Feature: Crucible CLI
     And a mock crucible config
     When I run review with report export
     Then the full report artifact is written
+    And run-scoped artifacts are written
+
+  Scenario: Review generates a GitHub dry-run review
+    Given a git repo with a diff
+    And a mock crucible config
+    And a mock GitHub CLI
+    When I run PR review with GitHub dry-run
+    Then the GitHub dry-run output includes inline comments
+    And the report includes a structured PR review draft
+
+  Scenario: Review publishes a GitHub PR review
+    Given a git repo with a diff
+    And a mock crucible config
+    And a mock GitHub CLI
+    When I run PR review and publish GitHub review
+    Then the GitHub review payload is posted
 
   Scenario: Review exits on Ctrl+C
     Given a git repo with a diff

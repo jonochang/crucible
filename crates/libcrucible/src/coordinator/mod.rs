@@ -26,6 +26,7 @@ impl Coordinator {
         registry: PluginRegistry,
         cfg: CrucibleConfig,
         progress: Option<tokio::sync::mpsc::UnboundedSender<crate::progress::ProgressEvent>>,
+        run_id: Uuid,
     ) -> Self {
         let consensus =
             ConsensusTracker::new(cfg.coordinator.quorum_threshold, cfg.plugins.agents.len());
@@ -35,7 +36,7 @@ impl Coordinator {
             snapshotter: MessageSnapshotter::default(),
             consensus,
             progress,
-            run_id: Uuid::new_v4(),
+            run_id,
         }
     }
 
@@ -283,6 +284,8 @@ impl Coordinator {
         }
         let action_plan = build_action_plan(&issues);
         let pr_comment = render_pr_comment(&issues, &action_plan);
+        let pr_review_draft =
+            crate::pr_review::build_review_draft(pr_comment.clone(), &issues, &ctx.diff);
 
         self.emit(ProgressEvent::PhaseStart {
             phase: "finalize".to_string(),
@@ -314,6 +317,7 @@ impl Coordinator {
             auto_fix,
             Some(action_plan),
             Some(pr_comment),
+            Some(pr_review_draft),
         );
         self.emit(ProgressEvent::Completed(report.clone()));
         self.emit(ProgressEvent::PhaseDone {

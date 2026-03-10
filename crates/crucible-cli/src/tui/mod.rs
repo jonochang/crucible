@@ -13,7 +13,7 @@ use ratatui::layout::Alignment;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use std::io::stdout;
+use std::io::{Write, stdout};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
@@ -65,6 +65,7 @@ pub async fn run_review_tui(
     diff_override: Option<String>,
     scope_label: String,
     output_report: Option<PathBuf>,
+    artifacts: libcrucible::artifacts::RunArtifacts,
 ) -> Result<i32> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -72,13 +73,14 @@ pub async fn run_review_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut log = open_review_log()?;
+    let mut log = open_review_log(&artifacts)?;
     let cfg = cfg.clone();
+    let run_id = artifacts.run_id;
     let mut handle = Some(tokio::spawn(async move {
         if let Some(diff) = diff_override {
-            libcrucible::run_review_with_progress_diff(&cfg, tx, diff).await
+            libcrucible::run_review_with_progress_diff_run_id(&cfg, tx, diff, run_id).await
         } else {
-            libcrucible::run_review_with_progress(&cfg, tx).await
+            libcrucible::run_review_with_progress_run_id(&cfg, tx, run_id).await
         }
     }));
 
@@ -227,8 +229,9 @@ pub async fn run_review_tui(
                     if let Some(path) = &output_report {
                         write_report(path, &json)?;
                     }
-                    write_log_json(&mut log, &json);
-                    write_log_report_sections(&mut log, rep);
+                    write_report(&artifacts.report_json, &json)?;
+                    write_log_json(&mut log, artifacts.run_id, &json);
+                    write_log_report_sections(&mut log, artifacts.run_id, rep);
                     report = Some(rep.clone());
                     screen = Screen::Review;
                     if !interactive {
@@ -241,7 +244,7 @@ pub async fn run_review_tui(
                 ProgressEvent::Canceled => {}
                 _ => {}
             }
-            write_log_event(&mut log, &event);
+            write_log_event(&mut log, artifacts.run_id, &event);
         }
 
         if report.is_none() && exit_code.is_none() {
@@ -254,8 +257,9 @@ pub async fn run_review_tui(
                             if let Some(path) = &output_report {
                                 write_report(path, &json)?;
                             }
-                            write_log_json(&mut log, &json);
-                            write_log_report_sections(&mut log, &rep);
+                            write_report(&artifacts.report_json, &json)?;
+                            write_log_json(&mut log, artifacts.run_id, &json);
+                            write_log_report_sections(&mut log, artifacts.run_id, &rep);
                             report = Some(rep.clone());
                             screen = Screen::Review;
                             if !interactive {
@@ -326,7 +330,7 @@ pub async fn run_review_tui(
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
                     {
-                        write_log_event(&mut log, &ProgressEvent::Canceled);
+                        write_log_event(&mut log, artifacts.run_id, &ProgressEvent::Canceled);
                         exit_code = Some(130);
                         break;
                     }
@@ -455,25 +459,44 @@ fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) 
     Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false })
 }
 
-fn open_review_log() -> Result<std::fs::File> {
-    let path = std::env::current_dir()?.join("review_report.log");
-    let file = std::fs::OpenOptions::new()
+struct ReviewLog {
+    sinks: Vec<std::fs::File>,
+}
+
+fn open_review_log(artifacts: &libcrucible::artifacts::RunArtifacts) -> Result<ReviewLog> {
+    let legacy_path = std::env::current_dir()?.join("review_report.log");
+    let legacy = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)?;
-    Ok(file)
+        .open(legacy_path)?;
+    let scoped = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&artifacts.progress_log)?;
+    Ok(ReviewLog {
+        sinks: vec![legacy, scoped],
+    })
 }
 
-fn write_log_event(log: &mut std::fs::File, event: &ProgressEvent) {
-    log_helpers::write_log_event(log, event);
+fn write_log_event(log: &mut ReviewLog, run_id: uuid::Uuid, event: &ProgressEvent) {
+    for sink in &mut log.sinks {
+        let _ = write!(sink, "[run:{}] ", run_id);
+        log_helpers::write_log_event(sink, event);
+    }
 }
 
-fn write_log_json(log: &mut std::fs::File, json: &str) {
-    log_helpers::write_log_json(log, json);
+fn write_log_json(log: &mut ReviewLog, run_id: uuid::Uuid, json: &str) {
+    for sink in &mut log.sinks {
+        let _ = writeln!(sink, "[run:{}]", run_id);
+        log_helpers::write_log_json(sink, json);
+    }
 }
 
-fn write_log_report_sections(log: &mut std::fs::File, report: &ReviewReport) {
-    log_helpers::write_log_report_sections(log, report);
+fn write_log_report_sections(log: &mut ReviewLog, run_id: uuid::Uuid, report: &ReviewReport) {
+    for sink in &mut log.sinks {
+        let _ = writeln!(sink, "[run:{}]", run_id);
+        log_helpers::write_log_report_sections(sink, report);
+    }
 }
 
 fn render_report_json(report: &ReviewReport) -> String {

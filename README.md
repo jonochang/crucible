@@ -25,6 +25,15 @@ cargo build --release
 # JSON output for scripting/CI
 crucible review --json
 
+# Write the full review report to a file
+crucible review --output-report review.json
+
+# Review a PR and preview the GitHub review without posting
+crucible review 123 --github-dry-run
+
+# Review a PR and publish inline comments + overview
+crucible review 123 --publish-github
+
 # Install a git pre-push hook
 crucible hook install
 ```
@@ -47,7 +56,7 @@ Crucible talks to these tools via stdin/stdout. Each CLI must return strict JSON
 - Asks each configured agent to produce structured findings.
 - Clusters findings by location/message similarity and computes consensus.
 - Runs LLM convergence judging (`CONVERGED`/`NOT_CONVERGED`) between rounds.
-- Builds canonical issues, a prioritized action plan, and a ready-to-post PR comment artifact.
+- Builds canonical issues, a prioritized action plan, a structured PR review draft, and a ready-to-post PR comment artifact.
 - Optionally asks the judge agent for an auto-fix unified diff.
 - Presents results in a TUI with `[Enter]` to apply the patch.
 
@@ -181,7 +190,7 @@ For auto-fix requests, agents must return:
 Runs a multi-agent review of your working tree diff vs `HEAD`.
 
 ```bash
-crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [--hook] [--json] [--verbose] [--debug] [--interactive] [--reviewer <id>] [--max-rounds <n>] [--export-issues <path>]
+crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [--hook] [--json] [--verbose] [--debug] [--interactive] [--reviewer <id>] [--max-rounds <n>] [--export-issues <path>] [--output-report <path>] [--github-dry-run] [--publish-github]
 ```
 
 Behavior:
@@ -195,13 +204,16 @@ Behavior:
 - `--json` prints the full report as JSON (no TUI).
 - `--hook` sets the exit code based on the verdict (see Exit Codes).
 - `--verbose` streams agent stdout/stderr to help debug CLI integrations.
-- `--debug` writes deep debug traces (prompts, raw agent I/O, orchestration transitions) to `crucible.log`.
+- `--debug` writes deep debug traces (prompts, raw agent I/O) to `.crucible/runs/<run_id>/debug.log`.
 - `--reviewer <id>` constrains review/analyzer/judge to one reviewer.
 - `--max-rounds <n>` overrides configured review rounds.
 - `--export-issues <path>` writes a deduplicated issue list with file/line locations and reviewers (`.json` or `.md`).
-- Progress and the final JSON report are appended to `review_report.log` in the current directory.
-- During review, Crucible streams startup header, analysis/system context, round status (with durations), convergence, and `[agent-review]` summaries.
-- Final report output includes an `Action Plan` section and a `PR Comment Artifact`.
+- `--output-report <path>` writes the full serialized `ReviewReport` to a chosen file path.
+- `--github-dry-run` renders the GitHub review overview + inline comments without posting them. Requires a PR target.
+- `--publish-github` posts the structured review draft to GitHub using `gh api`. Requires a PR target.
+- Progress is still appended to `review_report.log` in the current directory for compatibility, and each run also writes scoped artifacts under `.crucible/runs/<run_id>/`.
+- During review, Crucible streams startup header, startup sub-phases (references/history/docs/prechecks), analysis/system context, round status (with durations), convergence, and `[agent-review]` summaries.
+- Final report output includes an `Action Plan`, a `PR Comment Artifact`, and a structured `pr_review_draft` for GitHub publication.
 
 ### `crucible prompt-eval`
 

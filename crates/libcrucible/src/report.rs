@@ -22,6 +22,8 @@ pub struct ReviewReport {
     pub final_action_plan: Option<FinalActionPlan>,
     #[serde(default)]
     pub pr_comment_markdown: Option<String>,
+    #[serde(default)]
+    pub pr_review_draft: Option<PullRequestReviewDraft>,
     pub session_id: Uuid,
 }
 
@@ -38,6 +40,7 @@ impl ReviewReport {
         auto_fix: Option<AutoFix>,
         final_action_plan: Option<FinalActionPlan>,
         pr_comment_markdown: Option<String>,
+        pr_review_draft: Option<PullRequestReviewDraft>,
     ) -> Self {
         let verdict = Verdict::from_findings(findings, cfg);
         Self {
@@ -52,6 +55,7 @@ impl ReviewReport {
             auto_fix,
             final_action_plan,
             pr_comment_markdown,
+            pr_review_draft,
             session_id: run_id,
         }
     }
@@ -155,6 +159,52 @@ pub struct AutoFix {
 pub struct FinalActionPlan {
     pub prioritized_steps: Vec<String>,
     pub quick_wins: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PullRequestReviewDraft {
+    pub overview_comment: PullRequestOverviewComment,
+    #[serde(default)]
+    pub inline_comments: Vec<PullRequestCommentDraft>,
+    #[serde(default)]
+    pub overview_only_comments: Vec<PullRequestCommentDraft>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PullRequestOverviewComment {
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullRequestCommentDraft {
+    pub severity: Severity,
+    pub category: String,
+    pub title: String,
+    pub description: String,
+    pub body: String,
+    pub path: Option<PathBuf>,
+    pub line: Option<u32>,
+    pub side: Option<PullRequestCommentSide>,
+    pub start_line: Option<u32>,
+    pub start_side: Option<PullRequestCommentSide>,
+    pub source_agents: Vec<String>,
+    pub mapping_status: PullRequestCommentMappingStatus,
+    #[serde(default)]
+    pub mapping_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum PullRequestCommentSide {
+    Left,
+    #[default]
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum PullRequestCommentMappingStatus {
+    #[default]
+    Inline,
+    OverviewOnly,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
