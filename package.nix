@@ -21,7 +21,7 @@ let
   };
   in rustPlatform.buildRustPackage ({
     pname = "crucible";
-    version = "0.1.20";
+    version = "0.1.21";
     inherit src buildInputs nativeBuildInputs;
     cargoLock.lockFile = ./Cargo.lock;
     cargoBuildFlags = [ "-p" "crucible-cli" ];

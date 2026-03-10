@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.21 - 2026-03-11
+
+- Restored regression coverage for `crucible version` and `crucible --version` in the CLI BDD suite.
+
 ## 0.1.20 - 2026-03-10
 
 - Added explicit startup sub-phase progress for references, history, docs, and prechecks, including counts and durations.

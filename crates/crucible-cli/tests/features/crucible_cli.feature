@@ -1,5 +1,10 @@
 Feature: Crucible CLI
 
+  Scenario: Show version
+    When I run version
+    Then the version command prints the package version
+    And the flag version prints the package version
+
   Scenario: Initialize config in a new project
     Given an empty temp project
     When I run config init

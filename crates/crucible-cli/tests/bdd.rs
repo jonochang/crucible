@@ -9,6 +9,7 @@ use tempfile::TempDir;
 #[derive(Debug, Default, World)]
 struct CliWorld {
     output: Option<std::process::Output>,
+    flag_version_output: Option<std::process::Output>,
     temp_dir: Option<TempDir>,
     repo_dir: Option<PathBuf>,
     export_path: Option<PathBuf>,
@@ -355,6 +356,12 @@ fn run_config_init(world: &mut CliWorld) {
     world.output = Some(output);
 }
 
+#[when("I run version")]
+fn run_version(world: &mut CliWorld) {
+    world.output = Some(run_cmd(&["version"], None));
+    world.flag_version_output = Some(run_cmd(&["--version"], None));
+}
+
 #[when("I run review help")]
 fn run_review_help(world: &mut CliWorld) {
     let output = run_cmd(&["review", "--help"], None);
@@ -486,6 +493,27 @@ fn config_file_created(world: &mut CliWorld) {
     assert!(config_path.exists(), "config file missing");
     let contents = std::fs::read_to_string(config_path).expect("read config");
     assert!(contents.contains("[crucible]"));
+}
+
+#[then("the version command prints the package version")]
+fn version_command_prints_package_version(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = format!("crucible {}\n", env!("CARGO_PKG_VERSION"));
+    assert_eq!(stdout, expected);
+}
+
+#[then("the flag version prints the package version")]
+fn flag_version_prints_package_version(world: &mut CliWorld) {
+    let output = world
+        .flag_version_output
+        .as_ref()
+        .expect("flag version output available");
+    assert!(output.status.success(), "command failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = format!("crucible {}\n", env!("CARGO_PKG_VERSION"));
+    assert_eq!(stdout, expected);
 }
 
 #[then("the review help shows usage")]
