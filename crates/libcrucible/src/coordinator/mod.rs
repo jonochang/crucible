@@ -10,6 +10,7 @@ use crate::report::{
 use anyhow::{Result, anyhow};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 pub struct Coordinator {
     registry: PluginRegistry,
@@ -17,6 +18,7 @@ pub struct Coordinator {
     snapshotter: MessageSnapshotter,
     consensus: ConsensusTracker,
     progress: Option<tokio::sync::mpsc::UnboundedSender<crate::progress::ProgressEvent>>,
+    run_id: Uuid,
 }
 
 impl Coordinator {
@@ -33,6 +35,7 @@ impl Coordinator {
             snapshotter: MessageSnapshotter::default(),
             consensus,
             progress,
+            run_id: Uuid::new_v4(),
         }
     }
 
@@ -172,7 +175,8 @@ impl Coordinator {
                         return Err(err);
                     }
                 };
-                self.consensus.ingest_round(&output.findings, round, id, &ctx.diff);
+                self.consensus
+                    .ingest_round(&output.findings, round, id, &ctx.diff);
                 round_findings.insert(id.to_string(), output.findings.clone());
                 let (summary, highlights, details) =
                     summarize_agent_output(&output, using_chunking);
@@ -265,7 +269,9 @@ impl Coordinator {
         if self.cfg.coordinator.enable_structurizer {
             if let Ok(structured) = self
                 .run_with_timeout(
-                    self.registry.judge.structurize_issues(&agent_ctx, &findings),
+                    self.registry
+                        .judge
+                        .structurize_issues(&agent_ctx, &findings),
                     "structurize_issues",
                 )
                 .await
@@ -297,6 +303,7 @@ impl Coordinator {
 
         let final_analysis = render_final_analysis_markdown(&issues, &action_plan);
         let report = crate::report::ReviewReport::from_findings(
+            self.run_id,
             &findings,
             issues,
             Some(render_analysis_markdown(&focus)),
@@ -629,8 +636,10 @@ mod tests {
 
     #[test]
     fn chunking_splits_large_diff() {
-        let diff = "diff --git a/a.rs b/a.rs\n@@\n".to_string() + &"+x\n".repeat(600) +
-            "diff --git a/b.rs b/b.rs\n@@\n" + &"+y\n".repeat(700);
+        let diff = "diff --git a/a.rs b/a.rs\n@@\n".to_string()
+            + &"+x\n".repeat(600)
+            + "diff --git a/b.rs b/b.rs\n@@\n"
+            + &"+y\n".repeat(700);
         let chunks = chunk_diff(&diff, 500, 4);
         assert!(chunks.len() >= 2);
     }
@@ -660,11 +669,7 @@ mod tests {
 fn summarize_agent_output(
     output: &AgentReviewOutput,
     using_chunking: bool,
-) -> (
-    String,
-    Vec<crate::progress::AgentFindingPreview>,
-    String,
-) {
+) -> (String, Vec<crate::progress::AgentFindingPreview>, String) {
     let critical = output
         .findings
         .iter()
@@ -1015,7 +1020,8 @@ fn fallback_evidence_from_diff(
 }
 
 fn calibrate_low_confidence(findings: &mut [Finding]) {
-    let mut counts: HashMap<(Option<std::path::PathBuf>, Option<u32>, String), usize> = HashMap::new();
+    let mut counts: HashMap<(Option<std::path::PathBuf>, Option<u32>, String), usize> =
+        HashMap::new();
     for finding in findings.iter() {
         let key = (
             finding.file.clone(),
@@ -1048,13 +1054,7 @@ fn build_canonical_issues(findings: &[Finding]) -> Vec<CanonicalIssue> {
         let key = (
             finding.file.clone(),
             finding.span.as_ref().map(|s| s.start),
-            normalize_text(
-                finding
-                    .title
-                    .as_ref()
-                    .unwrap_or(&finding.message)
-                    .as_str(),
-            ),
+            normalize_text(finding.title.as_ref().unwrap_or(&finding.message).as_str()),
         );
         grouped.entry(key).or_default().push(finding);
     }

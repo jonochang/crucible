@@ -1,4 +1,6 @@
-use libcrucible::progress::{ConvergenceVerdict, ProgressEvent, ReviewerState};
+use libcrucible::progress::{
+    ConvergenceVerdict, ProgressEvent, ReviewerState, StartupPhase, StartupPhaseStatus,
+};
 use libcrucible::report::ReviewReport;
 use std::io::Write;
 
@@ -33,6 +35,7 @@ pub fn render_report_json(report: &ReviewReport) -> String {
                 })
                 .collect::<Vec<_>>();
             serde_json::to_string_pretty(&serde_json::json!({
+                "run_id": report.run_id,
                 "verdict": report.verdict,
                 "findings": report.findings,
                 "issues": report.issues,
@@ -84,6 +87,29 @@ pub fn write_log_event(w: &mut dyn Write, event: &ProgressEvent) {
         }
         ProgressEvent::AnalyzerDone => {
             let _ = writeln!(w, "[progress] analyzer:done");
+        }
+        ProgressEvent::StartupPhase {
+            phase,
+            status,
+            count,
+            duration_secs,
+            detail,
+        } => {
+            let count_suffix = count
+                .map(|value| format!(" count={value}"))
+                .unwrap_or_default();
+            let duration_suffix = duration_secs
+                .map(|value| format!(" duration={}", format_duration(value)))
+                .unwrap_or_default();
+            let _ = writeln!(
+                w,
+                "[progress] startup:{} {}{}{} {}",
+                format_startup_phase(*phase),
+                format_startup_status(*status),
+                count_suffix,
+                duration_suffix,
+                detail
+            );
         }
         ProgressEvent::AnalysisReady { markdown } => {
             let _ = writeln!(w, "[analysis]");
@@ -221,6 +247,23 @@ pub fn format_convergence(verdict: ConvergenceVerdict) -> &'static str {
     }
 }
 
+pub fn format_startup_phase(phase: StartupPhase) -> &'static str {
+    match phase {
+        StartupPhase::References => "references",
+        StartupPhase::History => "history",
+        StartupPhase::Docs => "docs",
+        StartupPhase::Prechecks => "prechecks",
+    }
+}
+
+pub fn format_startup_status(status: StartupPhaseStatus) -> &'static str {
+    match status {
+        StartupPhaseStatus::Started => "started",
+        StartupPhaseStatus::Completed => "completed",
+        StartupPhaseStatus::Failed => "failed",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,6 +281,10 @@ mod tests {
         // Timestamp should be "seconds.millis" where millis is zero-padded to 3 digits
         let parts: Vec<&str> = ts.split('.').collect();
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[1].len(), 3, "millis should be zero-padded to 3 digits");
+        assert_eq!(
+            parts[1].len(),
+            3,
+            "millis should be zero-padded to 3 digits"
+        );
     }
 }

@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewReport {
+    pub run_id: Uuid,
     pub verdict: Verdict,
     pub findings: Vec<Finding>,
     #[serde(default)]
@@ -26,6 +27,7 @@ pub struct ReviewReport {
 
 impl ReviewReport {
     pub fn from_findings(
+        run_id: Uuid,
         findings: &[Finding],
         issues: Vec<CanonicalIssue>,
         analysis_markdown: Option<String>,
@@ -39,6 +41,7 @@ impl ReviewReport {
     ) -> Self {
         let verdict = Verdict::from_findings(findings, cfg);
         Self {
+            run_id,
             verdict,
             findings: findings.to_vec(),
             issues,
@@ -49,7 +52,7 @@ impl ReviewReport {
             auto_fix,
             final_action_plan,
             pr_comment_markdown,
-            session_id: Uuid::new_v4(),
+            session_id: run_id,
         }
     }
 }

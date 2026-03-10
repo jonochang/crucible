@@ -8,8 +8,8 @@ use libcrucible::report::{CanonicalIssue, ReviewReport, Severity, Verdict};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 #[derive(Args)]
@@ -25,6 +25,8 @@ pub struct ReviewArgs {
         help = "Export deduplicated issues list to a file (.json or .md)"
     )]
     pub export_issues: Option<PathBuf>,
+    #[arg(long, help = "Write the full review report to a file (.json)")]
+    pub output_report: Option<PathBuf>,
     #[arg(long, help = "Enable verbose CLI agent logging")]
     pub verbose: bool,
     #[arg(long, help = "Enable debug logging to crucible.log")]
@@ -51,7 +53,11 @@ pub struct ReviewArgs {
     pub branch: Option<String>,
     #[arg(long, help = "Review specific files (git diff HEAD -- <files...>)")]
     pub files: Vec<PathBuf>,
-    #[arg(long, default_value = "origin", help = "Git remote to use for --repo base and PR checkout")]
+    #[arg(
+        long,
+        default_value = "origin",
+        help = "Git remote to use for --repo base and PR checkout"
+    )]
     pub git_remote: String,
 }
 
@@ -116,16 +122,19 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         }
     }
 
-    let use_tui = !args.hook
-        && args.export_issues.is_none()
-        && !args.json
-        && std::io::stdout().is_terminal();
+    let use_tui =
+        !args.hook && args.export_issues.is_none() && !args.json && std::io::stdout().is_terminal();
     if use_tui {
         let scope_label = describe_review_scope(&target, &args.git_remote)
             .unwrap_or_else(|_| "scope unavailable".to_string());
-        let exit_code =
-            crate::tui::run_review_tui(&cfg, args.interactive, diff_override.clone(), scope_label)
-                .await?;
+        let exit_code = crate::tui::run_review_tui(
+            &cfg,
+            args.interactive,
+            diff_override.clone(),
+            scope_label,
+            args.output_report.clone(),
+        )
+        .await?;
         std::process::exit(exit_code);
     }
 
@@ -165,6 +174,9 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     if args.json {
         let json = render_report_json(&report);
         println!("{json}");
+        if let Some(path) = &args.output_report {
+            write_report(path, &json)?;
+        }
         write_log_json(&log, &json);
         write_log_report_sections(&log, &report);
         if let Some(path) = &args.export_issues {
@@ -180,6 +192,10 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         println!("\nExported issues to {}", path.display());
     }
     let json = render_report_json(&report);
+    if let Some(path) = &args.output_report {
+        write_report(path, &json)?;
+        println!("Report written to {}", path.display());
+    }
     write_log_json(&log, &json);
     write_log_report_sections(&log, &report);
 
@@ -278,10 +294,7 @@ fn resolve_remote_default_branch(repo: &Repository, git_remote: &str) -> Result<
         .symbolic_target()
         .ok_or_else(|| anyhow::anyhow!("remote HEAD is not symbolic for {}", git_remote))?;
     let prefix = format!("refs/remotes/{git_remote}/");
-    Ok(target
-        .strip_prefix(&prefix)
-        .unwrap_or("main")
-        .to_string())
+    Ok(target.strip_prefix(&prefix).unwrap_or("main").to_string())
 }
 
 fn resolve_base_ref_for_current_branch(
@@ -344,7 +357,10 @@ fn describe_review_scope(target: &ReviewTarget, git_remote: &str) -> Result<Stri
             format!("Mode: branch | head: {head_branch} | base: {base}")
         }
         ReviewTarget::Files(files) => {
-            format!("Mode: files | head: {head_branch} | files: {}", files.join(", "))
+            format!(
+                "Mode: files | head: {head_branch} | files: {}",
+                files.join(", ")
+            )
         }
         ReviewTarget::PullRequest(pr) => format!("Mode: pr | PR: {pr}"),
     };
@@ -405,7 +421,7 @@ fn render_diff_to_patch(diff: &git2::Diff<'_>) -> Result<String> {
     let mut out = String::new();
     diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
         if let Ok(content) = std::str::from_utf8(line.content()) {
-            out.push_str(content);
+            push_diff_line(&mut out, line.origin(), content);
         }
         true
     })?;
@@ -747,6 +763,28 @@ fn emit_progress(event: &ProgressEvent) {
         ProgressEvent::PhaseDone { phase } => eprintln!("[progress] phase:done {}", phase),
         ProgressEvent::AnalyzerStart => eprintln!("[progress] analyzer:start"),
         ProgressEvent::AnalyzerDone => eprintln!("[progress] analyzer:done"),
+        ProgressEvent::StartupPhase {
+            phase,
+            status,
+            count,
+            duration_secs,
+            detail,
+        } => {
+            let count_suffix = count
+                .map(|value| format!(" count={value}"))
+                .unwrap_or_default();
+            let duration_suffix = duration_secs
+                .map(|value| format!(" duration={}", log_helpers::format_duration(value)))
+                .unwrap_or_default();
+            eprintln!(
+                "[progress] startup:{} {}{}{} {}",
+                log_helpers::format_startup_phase(*phase),
+                log_helpers::format_startup_status(*status),
+                count_suffix,
+                duration_suffix,
+                detail
+            );
+        }
         ProgressEvent::AnalysisReady { markdown } => {
             eprintln!("\n--- Analysis ---\n{}\n", markdown);
         }
@@ -840,6 +878,13 @@ fn render_spinner_status(event: &ProgressEvent) {
     let mut state = spinner_state().lock().expect("spinner lock");
     match event {
         ProgressEvent::PhaseStart { phase } => state.phase = phase.clone(),
+        ProgressEvent::StartupPhase { phase, status, .. } => {
+            state.phase = format!(
+                "startup:{} {}",
+                log_helpers::format_startup_phase(*phase),
+                log_helpers::format_startup_status(*status)
+            );
+        }
         ProgressEvent::RoundStart { round, .. } => state.round = Some(*round),
         ProgressEvent::ParallelStatus { statuses, .. } => {
             state.statuses = log_helpers::format_parallel_status(statuses);
@@ -855,12 +900,21 @@ fn render_spinner_status(event: &ProgressEvent) {
     let frame = FRAMES[state.frame % FRAMES.len()];
     state.frame = state.frame.wrapping_add(1);
 
-    let round = state.round.map(|r| format!("round {r}")).unwrap_or_else(|| "startup".to_string());
-    let phase = if state.phase.is_empty() { "initializing".to_string() } else { state.phase.clone() };
-    let status = if state.statuses.is_empty() { String::new() } else { format!(" | {}", state.statuses) };
-    let line = format!(
-        "\r\x1b[36m{frame}\x1b[0m \x1b[33m{phase}\x1b[0m ({round}){status}"
-    );
+    let round = state
+        .round
+        .map(|r| format!("round {r}"))
+        .unwrap_or_else(|| "startup".to_string());
+    let phase = if state.phase.is_empty() {
+        "initializing".to_string()
+    } else {
+        state.phase.clone()
+    };
+    let status = if state.statuses.is_empty() {
+        String::new()
+    } else {
+        format!(" | {}", state.statuses)
+    };
+    let line = format!("\r\x1b[36m{frame}\x1b[0m \x1b[33m{phase}\x1b[0m ({round}){status}");
     eprint!("{line}");
     let _ = std::io::stderr().flush();
 }
@@ -894,6 +948,21 @@ fn write_log_report_sections(log: &Arc<Mutex<std::fs::File>>, report: &ReviewRep
 
 fn render_report_json(report: &ReviewReport) -> String {
     log_helpers::render_report_json(report)
+}
+
+fn write_report(path: &std::path::Path, json: &str) -> Result<()> {
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+fn push_diff_line(buf: &mut String, origin: char, content: &str) {
+    match origin {
+        '+' | '-' | ' ' => {
+            buf.push(origin);
+            buf.push_str(content);
+        }
+        _ => buf.push_str(content),
+    }
 }
 
 #[cfg(test)]
@@ -945,6 +1014,7 @@ mod tests {
             },
         ];
         let report = ReviewReport::from_findings(
+            uuid::Uuid::nil(),
             &findings,
             Vec::new(),
             None,

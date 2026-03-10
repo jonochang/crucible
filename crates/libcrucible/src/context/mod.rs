@@ -3,10 +3,12 @@ use crate::context::docs::DocsCollector;
 use crate::context::history::HistoryCollector;
 use crate::context::precheck::collect_precheck_signals;
 use crate::context::reference::ReferenceCollector;
+use crate::progress::{ProgressEvent, StartupPhase, StartupPhaseStatus};
 use anyhow::{Context, Result};
 use git2::{DiffFormat, DiffOptions, Repository};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use tokio::task;
 
 pub mod docs;
@@ -36,6 +38,14 @@ pub struct GatheredContext {
 
 impl ReviewContext {
     pub async fn from_push(cwd: &Path, cfg: &CrucibleConfig) -> Result<Self> {
+        Self::from_push_with_progress(cwd, cfg, None).await
+    }
+
+    pub async fn from_push_with_progress(
+        cwd: &Path,
+        cfg: &CrucibleConfig,
+        progress: Option<&tokio::sync::mpsc::UnboundedSender<ProgressEvent>>,
+    ) -> Result<Self> {
         let repo = Repository::discover(cwd).context("discover git repo")?;
         let repo_root = repo.workdir().context("repo has no workdir")?.to_path_buf();
 
@@ -69,12 +79,176 @@ impl ReviewContext {
             DocsCollector::new(docs_cfg.docs_patterns, docs_cfg.docs_max_bytes).collect(&docs_root)
         });
 
+        emit_startup(
+            progress,
+            StartupPhase::References,
+            StartupPhaseStatus::Started,
+            None,
+            None,
+            "Scanning related references",
+        );
+        emit_startup(
+            progress,
+            StartupPhase::History,
+            StartupPhaseStatus::Started,
+            None,
+            None,
+            "Collecting recent history",
+        );
+        emit_startup(
+            progress,
+            StartupPhase::Docs,
+            StartupPhaseStatus::Started,
+            None,
+            None,
+            "Loading docs context",
+        );
+        let refs_started = Instant::now();
+        let history_started = Instant::now();
+        let docs_started = Instant::now();
         let (references, history, docs) = tokio::join!(refs_task, history_task, docs_task);
-        let prechecks = collect_precheck_signals(&repo_root, cfg)?;
+        let references = match references {
+            Ok(Ok(items)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::References,
+                    StartupPhaseStatus::Completed,
+                    Some(items.len()),
+                    Some(refs_started.elapsed().as_secs_f32()),
+                    "Reference scan complete",
+                );
+                items
+            }
+            Ok(Err(err)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::References,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(refs_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err);
+            }
+            Err(err) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::References,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(refs_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err.into());
+            }
+        };
+        let history = match history {
+            Ok(Ok(items)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::History,
+                    StartupPhaseStatus::Completed,
+                    Some(items.len()),
+                    Some(history_started.elapsed().as_secs_f32()),
+                    "History collection complete",
+                );
+                items
+            }
+            Ok(Err(err)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::History,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(history_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err);
+            }
+            Err(err) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::History,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(history_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err.into());
+            }
+        };
+        let docs = match docs {
+            Ok(Ok(items)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Docs,
+                    StartupPhaseStatus::Completed,
+                    Some(items.len()),
+                    Some(docs_started.elapsed().as_secs_f32()),
+                    "Docs collection complete",
+                );
+                items
+            }
+            Ok(Err(err)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Docs,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(docs_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err);
+            }
+            Err(err) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Docs,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(docs_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err.into());
+            }
+        };
+        emit_startup(
+            progress,
+            StartupPhase::Prechecks,
+            StartupPhaseStatus::Started,
+            None,
+            None,
+            "Running prechecks",
+        );
+        let prechecks_started = Instant::now();
+        let prechecks = match collect_precheck_signals(&repo_root, cfg) {
+            Ok(items) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Prechecks,
+                    StartupPhaseStatus::Completed,
+                    Some(items.len()),
+                    Some(prechecks_started.elapsed().as_secs_f32()),
+                    "Prechecks complete",
+                );
+                items
+            }
+            Err(err) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Prechecks,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(prechecks_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err);
+            }
+        };
         let gathered = GatheredContext {
-            references: references??,
-            history: history??,
-            docs: docs??,
+            references,
+            history,
+            docs,
             prechecks,
         };
 
@@ -92,6 +266,15 @@ impl ReviewContext {
     /// Build review context from an externally-provided patch string.
     /// Used by CLI target modes such as PR/branch/files that precompute their own diff.
     pub async fn from_diff(cwd: &Path, cfg: &CrucibleConfig, diff: String) -> Result<Self> {
+        Self::from_diff_with_progress(cwd, cfg, diff, None).await
+    }
+
+    pub async fn from_diff_with_progress(
+        cwd: &Path,
+        cfg: &CrucibleConfig,
+        diff: String,
+        progress: Option<&tokio::sync::mpsc::UnboundedSender<ProgressEvent>>,
+    ) -> Result<Self> {
         let repo = Repository::discover(cwd).context("discover git repo")?;
         let repo_root = repo.workdir().context("repo has no workdir")?.to_path_buf();
         let changed_files = changed_files_from_patch(&diff);
@@ -123,12 +306,176 @@ impl ReviewContext {
             DocsCollector::new(docs_cfg.docs_patterns, docs_cfg.docs_max_bytes).collect(&docs_root)
         });
 
+        emit_startup(
+            progress,
+            StartupPhase::References,
+            StartupPhaseStatus::Started,
+            None,
+            None,
+            "Scanning related references",
+        );
+        emit_startup(
+            progress,
+            StartupPhase::History,
+            StartupPhaseStatus::Started,
+            None,
+            None,
+            "Collecting recent history",
+        );
+        emit_startup(
+            progress,
+            StartupPhase::Docs,
+            StartupPhaseStatus::Started,
+            None,
+            None,
+            "Loading docs context",
+        );
+        let refs_started = Instant::now();
+        let history_started = Instant::now();
+        let docs_started = Instant::now();
         let (references, history, docs) = tokio::join!(refs_task, history_task, docs_task);
-        let prechecks = collect_precheck_signals(&repo_root, cfg)?;
+        let references = match references {
+            Ok(Ok(items)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::References,
+                    StartupPhaseStatus::Completed,
+                    Some(items.len()),
+                    Some(refs_started.elapsed().as_secs_f32()),
+                    "Reference scan complete",
+                );
+                items
+            }
+            Ok(Err(err)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::References,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(refs_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err);
+            }
+            Err(err) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::References,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(refs_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err.into());
+            }
+        };
+        let history = match history {
+            Ok(Ok(items)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::History,
+                    StartupPhaseStatus::Completed,
+                    Some(items.len()),
+                    Some(history_started.elapsed().as_secs_f32()),
+                    "History collection complete",
+                );
+                items
+            }
+            Ok(Err(err)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::History,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(history_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err);
+            }
+            Err(err) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::History,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(history_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err.into());
+            }
+        };
+        let docs = match docs {
+            Ok(Ok(items)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Docs,
+                    StartupPhaseStatus::Completed,
+                    Some(items.len()),
+                    Some(docs_started.elapsed().as_secs_f32()),
+                    "Docs collection complete",
+                );
+                items
+            }
+            Ok(Err(err)) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Docs,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(docs_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err);
+            }
+            Err(err) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Docs,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(docs_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err.into());
+            }
+        };
+        emit_startup(
+            progress,
+            StartupPhase::Prechecks,
+            StartupPhaseStatus::Started,
+            None,
+            None,
+            "Running prechecks",
+        );
+        let prechecks_started = Instant::now();
+        let prechecks = match collect_precheck_signals(&repo_root, cfg) {
+            Ok(items) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Prechecks,
+                    StartupPhaseStatus::Completed,
+                    Some(items.len()),
+                    Some(prechecks_started.elapsed().as_secs_f32()),
+                    "Prechecks complete",
+                );
+                items
+            }
+            Err(err) => {
+                emit_startup(
+                    progress,
+                    StartupPhase::Prechecks,
+                    StartupPhaseStatus::Failed,
+                    None,
+                    Some(prechecks_started.elapsed().as_secs_f32()),
+                    &err.to_string(),
+                );
+                return Err(err);
+            }
+        };
         let gathered = GatheredContext {
-            references: references??,
-            history: history??,
-            docs: docs??,
+            references,
+            history,
+            docs,
             prechecks,
         };
 
@@ -164,7 +511,7 @@ fn build_diff(repo: &Repository) -> Result<String> {
     let mut buf = String::new();
     diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
         if let Ok(content) = std::str::from_utf8(line.content()) {
-            buf.push_str(content);
+            push_diff_line(&mut buf, line.origin(), content);
         }
         true
     })?;
@@ -206,4 +553,33 @@ fn changed_files_from_patch(diff: &str) -> Vec<PathBuf> {
     files.sort();
     files.dedup();
     files
+}
+
+fn emit_startup(
+    progress: Option<&tokio::sync::mpsc::UnboundedSender<ProgressEvent>>,
+    phase: StartupPhase,
+    status: StartupPhaseStatus,
+    count: Option<usize>,
+    duration_secs: Option<f32>,
+    detail: &str,
+) {
+    if let Some(tx) = progress {
+        let _ = tx.send(ProgressEvent::StartupPhase {
+            phase,
+            status,
+            count,
+            duration_secs,
+            detail: detail.to_string(),
+        });
+    }
+}
+
+fn push_diff_line(buf: &mut String, origin: char, content: &str) {
+    match origin {
+        '+' | '-' | ' ' => {
+            buf.push(origin);
+            buf.push_str(content);
+        }
+        _ => buf.push_str(content),
+    }
 }

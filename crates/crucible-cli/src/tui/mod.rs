@@ -14,6 +14,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::io::stdout;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 use tokio::sync::mpsc;
@@ -45,6 +46,7 @@ struct ProgressState {
     system_context: Option<String>,
     convergence: Option<String>,
     parallel_status: Option<String>,
+    startup_updates: Vec<String>,
     agents: Vec<String>,
     statuses: std::collections::HashMap<String, AgentStatus>,
     reviews: std::collections::HashMap<String, AgentReviewState>,
@@ -62,6 +64,7 @@ pub async fn run_review_tui(
     interactive: bool,
     diff_override: Option<String>,
     scope_label: String,
+    output_report: Option<PathBuf>,
 ) -> Result<i32> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -117,6 +120,28 @@ pub async fn run_review_tui(
                 }
                 ProgressEvent::AnalyzerStart => screen = Screen::Analyzing,
                 ProgressEvent::AnalyzerDone => progress.analyzer_done = true,
+                ProgressEvent::StartupPhase {
+                    phase,
+                    status,
+                    count,
+                    duration_secs,
+                    detail,
+                } => {
+                    let count_suffix = count
+                        .map(|value| format!(" count={value}"))
+                        .unwrap_or_default();
+                    let duration_suffix = duration_secs
+                        .map(|value| format!(" duration={}", log_helpers::format_duration(value)))
+                        .unwrap_or_default();
+                    progress.startup_updates.push(format!(
+                        "{} {}{}{} - {}",
+                        log_helpers::format_startup_phase(*phase),
+                        log_helpers::format_startup_status(*status),
+                        count_suffix,
+                        duration_suffix,
+                        detail
+                    ));
+                }
                 ProgressEvent::AnalysisReady { markdown } => {
                     progress.analysis = Some(markdown.clone())
                 }
@@ -199,6 +224,9 @@ pub async fn run_review_tui(
                 }
                 ProgressEvent::Completed(rep) => {
                     let json = render_report_json(rep);
+                    if let Some(path) = &output_report {
+                        write_report(path, &json)?;
+                    }
                     write_log_json(&mut log, &json);
                     write_log_report_sections(&mut log, rep);
                     report = Some(rep.clone());
@@ -223,6 +251,9 @@ pub async fn run_review_tui(
                     match h.await.context("review task join")? {
                         Ok(rep) => {
                             let json = render_report_json(&rep);
+                            if let Some(path) = &output_report {
+                                write_report(path, &json)?;
+                            }
                             write_log_json(&mut log, &json);
                             write_log_report_sections(&mut log, &rep);
                             report = Some(rep.clone());
@@ -360,6 +391,16 @@ fn render_analyzing<'a>(progress: &'a ProgressState, spinner: &'static str) -> P
             Style::default().fg(Color::Green),
         )));
     }
+    if !progress.startup_updates.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Startup phases:",
+            Style::default().fg(Color::Gray),
+        )));
+        for item in &progress.startup_updates {
+            lines.push(Line::from(format!("  - {}", item)));
+        }
+    }
     Paragraph::new(Text::from(lines))
         .alignment(Alignment::Left)
         .wrap(Wrap { trim: true })
@@ -439,6 +480,11 @@ fn render_report_json(report: &ReviewReport) -> String {
     log_helpers::render_report_json(report)
 }
 
+fn write_report(path: &std::path::Path, json: &str) -> Result<()> {
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
 fn render_reviewing<'a>(progress: &'a ProgressState, spinner: &'static str) -> Paragraph<'a> {
     let mut lines = Vec::new();
     lines.push(Line::from(vec![
@@ -450,6 +496,12 @@ fn render_reviewing<'a>(progress: &'a ProgressState, spinner: &'static str) -> P
     }
     if let Some(phase) = &progress.phase {
         lines.push(Line::from(format!("Phase: {}", phase)));
+    }
+    if !progress.startup_updates.is_empty() {
+        lines.push(Line::from("Startup phases:"));
+        for item in &progress.startup_updates {
+            lines.push(Line::from(format!("  - {}", item)));
+        }
     }
     let round = progress.round.unwrap_or(1);
     let total = progress.total_rounds.max(1);

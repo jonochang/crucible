@@ -23,7 +23,9 @@ pub async fn run_review_with_progress(
     cfg: &config::CrucibleConfig,
     tx: tokio::sync::mpsc::UnboundedSender<progress::ProgressEvent>,
 ) -> Result<ReviewReport> {
-    let ctx = context::ReviewContext::from_push(&std::env::current_dir()?, cfg).await?;
+    let ctx =
+        context::ReviewContext::from_push_with_progress(&std::env::current_dir()?, cfg, Some(&tx))
+            .await?;
     let registry = PluginRegistry::from_config(cfg)?;
     let mut coord = Coordinator::new(registry, cfg.clone(), Some(tx));
     coord.run(&ctx).await
@@ -34,7 +36,13 @@ pub async fn run_review_with_progress_diff(
     tx: tokio::sync::mpsc::UnboundedSender<progress::ProgressEvent>,
     diff: String,
 ) -> Result<ReviewReport> {
-    let ctx = context::ReviewContext::from_diff(&std::env::current_dir()?, cfg, diff).await?;
+    let ctx = context::ReviewContext::from_diff_with_progress(
+        &std::env::current_dir()?,
+        cfg,
+        diff,
+        Some(&tx),
+    )
+    .await?;
     let registry = PluginRegistry::from_config(cfg)?;
     let mut coord = Coordinator::new(registry, cfg.clone(), Some(tx));
     coord.run(&ctx).await

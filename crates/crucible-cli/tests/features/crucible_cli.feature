@@ -22,6 +22,7 @@ Feature: Crucible CLI
     When I run review
     Then progress output is emitted
     And startup header is shown
+    And startup phase output is shown
     And round status output includes durations
     And analysis section is shown
     And system context section is shown
@@ -32,6 +33,12 @@ Feature: Crucible CLI
     And a mock crucible config
     When I run review with issue export
     Then issues are exported with code locations
+
+  Scenario: Review exports full report to file
+    Given a git repo with a diff
+    And a mock crucible config
+    When I run review with report export
+    Then the full report artifact is written
 
   Scenario: Review exits on Ctrl+C
     Given a git repo with a diff

@@ -1,5 +1,20 @@
 use crate::report::ReviewReport;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupPhase {
+    References,
+    History,
+    Docs,
+    Prechecks,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupPhaseStatus {
+    Started,
+    Completed,
+    Failed,
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentFindingPreview {
     pub severity: String,
@@ -46,6 +61,13 @@ pub enum ProgressEvent {
     },
     AnalyzerStart,
     AnalyzerDone,
+    StartupPhase {
+        phase: StartupPhase,
+        status: StartupPhaseStatus,
+        count: Option<usize>,
+        duration_secs: Option<f32>,
+        detail: String,
+    },
     AnalysisReady {
         markdown: String,
     },

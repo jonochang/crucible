@@ -21,7 +21,10 @@ pub enum PrecheckStatus {
     Skipped,
 }
 
-pub fn collect_precheck_signals(repo_root: &Path, cfg: &CrucibleConfig) -> Result<Vec<PrecheckSignal>> {
+pub fn collect_precheck_signals(
+    repo_root: &Path,
+    cfg: &CrucibleConfig,
+) -> Result<Vec<PrecheckSignal>> {
     if !cfg.prechecks.enabled {
         return Ok(vec![PrecheckSignal {
             tool: "prechecks".to_string(),
@@ -95,7 +98,9 @@ fn run_untangle_tools(repo_root: &Path, program: &str, timeout_secs: u64) -> Vec
         run_tool(
             repo_root,
             program,
-            &["quality", ".", "--metric", "crap", "--format", "json", "--quiet"],
+            &[
+                "quality", ".", "--metric", "crap", "--format", "json", "--quiet",
+            ],
             timeout_secs,
             "untangle-quality-crap",
         ),
@@ -162,10 +167,7 @@ fn run_tool(
     }
 }
 
-fn wait_with_timeout(
-    mut cmd: Command,
-    timeout: Duration,
-) -> Result<Option<std::process::Output>> {
+fn wait_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Option<std::process::Output>> {
     use std::thread;
     use std::time::Instant;
 

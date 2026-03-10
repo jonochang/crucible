@@ -10,7 +10,11 @@ pub struct PromptEvalArgs {
     pub dataset: PathBuf,
     #[arg(long, help = "Output JSON report path")]
     pub out: PathBuf,
-    #[arg(long, default_value_t = false, help = "Run with only codex reviewer for faster evaluations")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run with only codex reviewer for faster evaluations"
+    )]
     pub fast: bool,
 }
 
@@ -111,12 +115,13 @@ pub async fn run(args: PromptEvalArgs) -> Result<()> {
     Ok(())
 }
 
-fn count_matches(expected: &[ExpectedIssue], actual: &[libcrucible::report::CanonicalIssue]) -> usize {
+fn count_matches(
+    expected: &[ExpectedIssue],
+    actual: &[libcrucible::report::CanonicalIssue],
+) -> usize {
     expected
         .iter()
-        .filter(|exp| {
-            actual.iter().any(|issue| issue_matches(exp, issue))
-        })
+        .filter(|exp| actual.iter().any(|issue| issue_matches(exp, issue)))
         .count()
 }
 

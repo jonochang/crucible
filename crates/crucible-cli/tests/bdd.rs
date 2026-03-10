@@ -12,6 +12,7 @@ struct CliWorld {
     temp_dir: Option<TempDir>,
     repo_dir: Option<PathBuf>,
     export_path: Option<PathBuf>,
+    report_path: Option<PathBuf>,
     interrupt_status: Option<i32>,
     interrupt_stderr: Option<String>,
 }
@@ -287,6 +288,19 @@ fn run_review_with_export(world: &mut CliWorld) {
     world.output = Some(output);
 }
 
+#[when("I run review with report export")]
+fn run_review_with_report_export(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let report_path = repo_dir.join("report.json");
+    let report_arg = report_path.display().to_string();
+    let output = run_cmd(
+        &["review", "--output-report", report_arg.as_str()],
+        Some(repo_dir),
+    );
+    world.report_path = Some(report_path);
+    world.output = Some(output);
+}
+
 #[when("I interrupt review")]
 fn interrupt_review(world: &mut CliWorld) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
@@ -367,6 +381,16 @@ fn startup_header_shown(world: &mut CliWorld) {
     assert!(stderr.contains("Max rounds:"));
 }
 
+#[then("startup phase output is shown")]
+fn startup_phase_output_shown(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[progress] startup:references"));
+    assert!(stderr.contains("[progress] startup:history"));
+    assert!(stderr.contains("[progress] startup:docs"));
+    assert!(stderr.contains("[progress] startup:prechecks"));
+}
+
 #[then("round status output includes durations")]
 fn round_status_with_durations(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("output available");
@@ -417,6 +441,22 @@ fn issues_exported_with_locations(world: &mut CliWorld) {
             .contains("README.md:1")
     );
     assert!(first.get("raised_by").is_some(), "raised_by missing");
+}
+
+#[then("the full report artifact is written")]
+fn full_report_artifact_written(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let report_path = world.report_path.as_ref().expect("report path");
+    assert!(report_path.exists(), "report export missing");
+    let raw = std::fs::read_to_string(report_path).expect("read report export");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("parse report export json");
+    assert!(json.get("run_id").is_some(), "run_id missing");
+    assert!(json.get("verdict").is_some(), "verdict missing");
+    assert!(
+        json.get("analysis_markdown").is_some(),
+        "analysis_markdown missing"
+    );
 }
 
 #[then("the review exits with code 130")]
