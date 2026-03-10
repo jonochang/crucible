@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.20 - 2026-03-10
+
+- Added explicit startup sub-phase progress for references, history, docs, and prechecks, including counts and durations.
+- Fixed diff rendering so libgit2-generated patches preserve line prefixes and local reviews no longer skip valid changes.
+- Added `run_id` to `ReviewReport` and per-run artifact bundles under `.crucible/runs/<run_id>/`.
+- Added `--output-report <path>` to write the full serialized review report to a chosen file.
+- Added structured `pr_review_draft` output with mapped inline comments and overview-only fallback comments.
+- Added `--github-dry-run` to preview the GitHub review overview and inline comments without posting.
+- Added `--publish-github` to publish a GitHub PR review via `gh api`, including duplicate-post protection for the current head SHA.
+- Updated the TUI, CLI help, README, and CLI spec to reflect the richer progress/output/GitHub review flow.
+
 ## 0.1.19 - 2026-03-06
 
 - Added analyzer retry on parse/schema failures before aborting the run.
