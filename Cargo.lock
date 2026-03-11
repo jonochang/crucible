@@ -356,11 +356,11 @@ dependencies = [
 
 [[package]]
 name = "crucible-claude-code"
-version = "0.1.23"
+version = "0.1.24"
 
 [[package]]
 name = "crucible-cli"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1210,7 +1210,7 @@ checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
 
 [[package]]
 name = "libcrucible"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "async-trait",

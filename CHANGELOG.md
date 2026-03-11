@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.24 - 2026-03-11
+
+- Changed the TUI conversation viewer to reserve one latest transcript slot per configured agent instead of a shared rolling window.
+
 ## 0.1.23 - 2026-03-11
 
 - Removed the tracked repo `.githooks/pre-push` hook so normal pushes no longer trigger a live local Crucible review by default.

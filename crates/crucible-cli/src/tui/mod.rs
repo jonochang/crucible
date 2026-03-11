@@ -13,7 +13,6 @@ use ratatui::layout::Alignment;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use std::collections::VecDeque;
 use std::io::{Write, stdout};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -51,7 +50,7 @@ struct ProgressState {
     agents: Vec<String>,
     statuses: std::collections::HashMap<String, AgentStatus>,
     reviews: std::collections::HashMap<String, AgentReviewState>,
-    transcript_window: VecDeque<String>,
+    transcript_entries: Vec<TranscriptEntry>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -59,6 +58,13 @@ struct AgentReviewState {
     summary: String,
     highlights: Vec<String>,
     details: String,
+}
+
+#[derive(Debug, Clone)]
+struct TranscriptEntry {
+    id: String,
+    rendered: String,
+    seq: u64,
 }
 
 pub async fn run_review_tui(
@@ -95,6 +101,7 @@ pub async fn run_review_tui(
     let mut last_tick = Instant::now();
     let mut spinner_idx: usize = 0;
     let mut exit_code: Option<i32> = None;
+    let mut transcript_seq: u64 = 0;
 
     loop {
         while let Ok(event) = rx.try_recv() {
@@ -191,12 +198,13 @@ pub async fn run_review_tui(
                         TranscriptDirection::ToAgent => "->",
                         TranscriptDirection::FromAgent => "<-",
                     };
-                    progress
-                        .transcript_window
-                        .push_back(format!("{prefix} {id}: {}", truncate_line(message, 150)));
-                    while progress.transcript_window.len() > 2 {
-                        progress.transcript_window.pop_front();
-                    }
+                    transcript_seq = transcript_seq.wrapping_add(1);
+                    upsert_transcript_entry(
+                        &mut progress.transcript_entries,
+                        id,
+                        format!("{prefix} {id}: {}", truncate_line(message, 150)),
+                        transcript_seq,
+                    );
                 }
                 ProgressEvent::AgentReview {
                     id,
@@ -572,10 +580,11 @@ fn render_reviewing<'a>(progress: &'a ProgressState, spinner: &'static str) -> P
         lines.push(Line::from(""));
         lines.push(Line::from(convergence.clone()));
     }
-    if !progress.transcript_window.is_empty() {
+    let transcript_window = latest_transcript_lines(&progress.transcript_entries, progress.agents.len());
+    if !transcript_window.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from("Conversation:"));
-        for item in &progress.transcript_window {
+        for item in &transcript_window {
             lines.push(Line::from(format!("  {}", item)));
         }
     }
@@ -657,4 +666,25 @@ fn truncate_line(input: &str, max: usize) -> String {
     }
     out.push_str("...");
     out
+}
+
+fn upsert_transcript_entry(entries: &mut Vec<TranscriptEntry>, id: &str, rendered: String, seq: u64) {
+    if let Some(existing) = entries.iter_mut().find(|entry| entry.id == id) {
+        existing.rendered = rendered;
+        existing.seq = seq;
+        return;
+    }
+    entries.push(TranscriptEntry {
+        id: id.to_string(),
+        rendered,
+        seq,
+    });
+}
+
+fn latest_transcript_lines(entries: &[TranscriptEntry], limit: usize) -> Vec<String> {
+    let mut entries = entries.to_vec();
+    entries.sort_by(|a, b| b.seq.cmp(&a.seq));
+    entries.truncate(limit);
+    entries.sort_by(|a, b| a.seq.cmp(&b.seq));
+    entries.into_iter().map(|entry| entry.rendered).collect()
 }
