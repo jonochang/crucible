@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.23 - 2026-03-11
+
+- Removed the tracked repo `.githooks/pre-push` hook so normal pushes no longer trigger a live local Crucible review by default.
+- Hardened Claude Code envelope parsing to extract fenced JSON even when the CLI prefixes it with prose, fixing analyzer/reviewer parse failures on valid Claude responses.
+
 ## 0.1.22 - 2026-03-11
 
 - Added an `mdBook` documentation site under `docs/`, with local `just docs-serve` and `just docs-build` commands.
