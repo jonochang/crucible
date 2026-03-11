@@ -350,8 +350,9 @@ fn parse_claude_envelope<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T>
     }
     if let Some(result) = value.get("result").and_then(|r| r.as_str()) {
         if !result.trim().is_empty() {
-            let candidate = strip_fenced_json(result);
-            return serde_json::from_str(candidate.as_str()).ok();
+            if let Some(parsed) = parse_jsonish_text(result) {
+                return Some(parsed);
+            }
         }
     }
     None
@@ -361,17 +362,38 @@ fn parse_gemini_envelope<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T>
     let value: serde_json::Value = serde_json::from_str(input).ok()?;
     let response = value.get("response")?;
     match response {
-        serde_json::Value::String(text) => {
-            let candidate = strip_fenced_json(text);
-            serde_json::from_str::<T>(&candidate)
-                .ok()
-                .or_else(|| parse_json_from_mixed(&candidate))
-        }
+        serde_json::Value::String(text) => parse_jsonish_text(text),
         serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
             serde_json::from_value(response.clone()).ok()
         }
         _ => None,
     }
+}
+
+fn parse_jsonish_text<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T> {
+    serde_json::from_str::<T>(input)
+        .ok()
+        .or_else(|| {
+            extract_fenced_json_block(input)
+                .and_then(|candidate| serde_json::from_str::<T>(candidate.as_str()).ok())
+        })
+        .or_else(|| {
+            extract_fenced_json_block(input).and_then(|candidate| parse_json_from_mixed(&candidate))
+        })
+        .or_else(|| parse_json_from_mixed(input))
+}
+
+fn extract_fenced_json_block(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.starts_with("```") {
+        return Some(strip_fenced_json(trimmed));
+    }
+
+    let start = trimmed.find("```")?;
+    let rest = &trimmed[start..];
+    let end = rest[3..].find("```")?;
+    let fenced = &rest[..end + 6];
+    Some(strip_fenced_json(fenced))
 }
 
 fn strip_fenced_json(input: &str) -> String {
@@ -804,5 +826,26 @@ mod tests {
     fn inbound_preview_prefers_narrative() {
         let preview = preview_inbound(r#"{"narrative":"Agent found one issue","findings":[]}"#);
         assert_eq!(preview, "Agent found one issue");
+    }
+
+    #[test]
+    fn parse_claude_envelope_extracts_fenced_json_after_prose() {
+        let input = r#"{
+          "type":"result",
+          "result":"Now I have enough context.\n\n```json\n{\"summary\":\"ok\",\"focus_items\":[],\"trade_offs\":[],\"affected_modules\":[],\"call_chain\":[],\"design_patterns\":[],\"reviewer_checklist\":[]}\n```"
+        }"#;
+        let parsed = parse_claude_envelope::<FocusAreas>(input).expect("focus areas");
+        assert_eq!(parsed.summary, "ok");
+    }
+
+    #[test]
+    fn parse_claude_envelope_extracts_findings_from_fenced_json_after_prose() {
+        let input = r#"{
+          "type":"result",
+          "result":"Let me produce the findings.\n\n```json\n{\"narrative\":\"done\",\"findings\":[]}\n```"
+        }"#;
+        let parsed = parse_claude_envelope::<FindingsResponse>(input).expect("findings");
+        assert_eq!(parsed.narrative.as_deref(), Some("done"));
+        assert!(parsed.findings.is_empty());
     }
 }
