@@ -139,6 +139,17 @@ pub fn write_log_event(w: &mut dyn Write, event: &ProgressEvent) {
         ProgressEvent::AgentStart { round, id } => {
             let _ = writeln!(w, "[progress] agent:start round={} id={}", round, id);
         }
+        ProgressEvent::AgentTranscript {
+            id,
+            direction,
+            message,
+        } => {
+            let arrow = match direction {
+                libcrucible::progress::TranscriptDirection::ToAgent => "->",
+                libcrucible::progress::TranscriptDirection::FromAgent => "<-",
+            };
+            let _ = writeln!(w, "[agent-chat] {} {} {}", arrow, id, message);
+        }
         ProgressEvent::AgentReview {
             round,
             id,

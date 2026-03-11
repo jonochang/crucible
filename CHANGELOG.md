@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.22 - 2026-03-11
+
+- Added an `mdBook` documentation site under `docs/`, with local `just docs-serve` and `just docs-build` commands.
+- Fixed reviewer response parsing so malformed agent JSON no longer silently deserializes as an empty finding list.
+- Fixed diff chunking to preserve the full change set when the chunk limit is reached.
+- Changed reviewer execution to run concurrently instead of serially while preserving per-agent progress reporting.
+- Restored the original checkout after PR-targeted reviews instead of leaving the repository on the PR branch.
+- Added a compact rolling two-line agent conversation preview to the live review UI and progress logs.
+
 ## 0.1.21 - 2026-03-11
 
 - Restored regression coverage for `crucible version` and `crucible --version` in the CLI BDD suite.

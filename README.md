@@ -4,6 +4,18 @@ An autonomous, multi-agent code review swarm that tests and hardens your code be
 
 Crucible runs locally, gathers rich context, asks a council of CLI-driven agents to review your diff, and can apply an auto-fix diff in a terminal UI.
 
+## Documentation
+
+Crucible now ships an `mdBook` documentation site under `docs/`.
+
+```bash
+# Serve the docs locally
+just docs-serve
+
+# Build the static site
+just docs-build
+```
+
 ## Quick Start
 
 ```bash

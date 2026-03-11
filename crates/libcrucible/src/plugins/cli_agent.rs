@@ -1,6 +1,7 @@
 use crate::analysis::{AgentContext, FocusAreas};
 use crate::config::CliPluginConfig;
 use crate::plugin::{AgentPlugin, AgentReviewOutput, ConvergenceDecision, FocusAnalyzer};
+use crate::progress::{ProgressEvent, TranscriptDirection};
 use crate::report::{
     AutoFix, CanonicalIssue, Confidence, EvidenceAnchor, Finding, RawFinding, Severity,
 };
@@ -25,6 +26,8 @@ pub struct CliAgentPlugin {
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 static DEBUG_FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+static PROGRESS_TX: OnceLock<Mutex<Option<tokio::sync::mpsc::UnboundedSender<ProgressEvent>>>> =
+    OnceLock::new();
 
 pub fn set_verbose(enabled: bool) {
     VERBOSE.store(enabled, Ordering::Relaxed);
@@ -35,6 +38,15 @@ pub fn set_debug_log(path: &Path) -> Result<()> {
     let _ = DEBUG_FILE.set(Mutex::new(file));
     DEBUG_ENABLED.store(true, Ordering::Relaxed);
     debug_log_line("debug logging enabled");
+    Ok(())
+}
+
+pub fn set_progress_sender(
+    tx: Option<tokio::sync::mpsc::UnboundedSender<ProgressEvent>>,
+) -> Result<()> {
+    let lock = PROGRESS_TX.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().map_err(|_| anyhow!("progress sender lock poisoned"))?;
+    *guard = tx;
     Ok(())
 }
 
@@ -64,6 +76,7 @@ impl CliAgentPlugin {
                 self.id
             ));
         }
+        emit_transcript_event(&self.id, TranscriptDirection::ToAgent, &preview_outbound(&user));
         let prompt = if is_claude {
             user
         } else if is_gemini {
@@ -192,6 +205,11 @@ impl CliAgentPlugin {
                 }
             }
         };
+        emit_transcript_event(
+            &self.id,
+            TranscriptDirection::FromAgent,
+            &preview_inbound(&stdout),
+        );
         debug_log_line(&format!("[{}] parsed response successfully", self.id));
         Ok(parsed)
     }
@@ -406,6 +424,104 @@ fn sanitize_terminal_output(input: &str) -> String {
     out
 }
 
+fn emit_transcript_event(id: &str, direction: TranscriptDirection, message: &str) {
+    let Some(lock) = PROGRESS_TX.get() else {
+        return;
+    };
+    let Ok(guard) = lock.lock() else {
+        return;
+    };
+    let Some(tx) = guard.as_ref() else {
+        return;
+    };
+    let _ = tx.send(ProgressEvent::AgentTranscript {
+        id: id.to_string(),
+        direction,
+        message: truncate(&sanitize_terminal_output(message), 180),
+    });
+}
+
+fn preview_outbound(user: &str) -> String {
+    let compact = user
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !matches!(
+                    *line,
+                    "Diff to review:" | "Review context:" | "Prior round reviewer discussion:"
+                )
+                && !line.starts_with("Round: ")
+                && !line.starts_with("- Relevant references:")
+                && !line.starts_with("- Recent commit history:")
+                && !line.starts_with("- Deterministic precheck signals:")
+                && !line.starts_with("diff --git ")
+                && !line.starts_with("@@")
+                && !line.starts_with('+')
+                && !line.starts_with('-')
+        })
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact.is_empty() {
+        "sending review prompt".to_string()
+    } else {
+        compact
+    }
+}
+
+fn preview_inbound(stdout: &str) -> String {
+    let sanitized = sanitize_terminal_output(stdout);
+    if let Some(value) = parse_transcript_preview_json(&sanitized) {
+        return value;
+    }
+    let compact = sanitized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact.is_empty() {
+        "received empty response".to_string()
+    } else {
+        compact
+    }
+}
+
+fn parse_transcript_preview_json(input: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(input).ok()?;
+    if let Some(summary) = value.get("narrative").and_then(|v| v.as_str()) {
+        let summary = summary.trim();
+        if !summary.is_empty() {
+            return Some(summary.to_string());
+        }
+    }
+    if let Some(summary) = value.get("summary").and_then(|v| v.as_str()) {
+        let summary = summary.trim();
+        if !summary.is_empty() {
+            return Some(summary.to_string());
+        }
+    }
+    if let Some(explanation) = value.get("explanation").and_then(|v| v.as_str()) {
+        let explanation = explanation.trim();
+        if !explanation.is_empty() {
+            return Some(explanation.to_string());
+        }
+    }
+    if let Some(findings) = value.get("findings").and_then(|v| v.as_array()) {
+        if let Some(message) = findings
+            .first()
+            .and_then(|item| item.get("message"))
+            .and_then(|v| v.as_str())
+        {
+            return Some(message.trim().to_string());
+        }
+        return Some(format!("{} findings returned", findings.len()));
+    }
+    None
+}
+
 #[async_trait]
 impl AgentPlugin for CliAgentPlugin {
     fn id(&self) -> &str {
@@ -514,7 +630,6 @@ The summary must be markdown-ready text."
 struct FindingsResponse {
     #[serde(default)]
     narrative: Option<String>,
-    #[serde(default)]
     findings: Vec<RawFindingResponse>,
 }
 
@@ -660,5 +775,34 @@ mod tests {
         assert!(prompt.contains("prior-round discussion"));
         assert!(prompt.contains("no same-round leakage"));
         assert!(prompt.contains("Round 1 prior reviewer findings"));
+    }
+
+    #[test]
+    fn findings_response_requires_findings_field() {
+        let parsed = serde_json::from_str::<FindingsResponse>(r#"{"narrative":"ok"}"#);
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn findings_response_allows_explicit_empty_findings() {
+        let parsed = serde_json::from_str::<FindingsResponse>(
+            r#"{"narrative":"ok","findings":[]}"#,
+        )
+        .expect("findings response");
+        assert!(parsed.findings.is_empty());
+    }
+
+    #[test]
+    fn outbound_preview_skips_diff_bulk() {
+        let preview = preview_outbound(
+            "Round: 1\nReview context:\n- Relevant references: []\nDiff to review:\n+ massive",
+        );
+        assert_eq!(preview, "sending review prompt");
+    }
+
+    #[test]
+    fn inbound_preview_prefers_narrative() {
+        let preview = preview_inbound(r#"{"narrative":"Agent found one issue","findings":[]}"#);
+        assert_eq!(preview, "Agent found one issue");
     }
 }

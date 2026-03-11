@@ -1,6 +1,12 @@
 use crate::report::ReviewReport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptDirection {
+    ToAgent,
+    FromAgent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupPhase {
     References,
     History,
@@ -86,6 +92,11 @@ pub enum ProgressEvent {
     AgentStart {
         round: u8,
         id: String,
+    },
+    AgentTranscript {
+        id: String,
+        direction: TranscriptDirection,
+        message: String,
     },
     AgentReview {
         round: u8,

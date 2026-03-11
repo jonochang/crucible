@@ -8,6 +8,7 @@ use crate::report::{
     FindingKey, LineSpan, RawFinding, Severity,
 };
 use anyhow::{Result, anyhow};
+use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -139,6 +140,11 @@ impl Coordinator {
             });
 
             let mut round_findings: HashMap<String, Vec<RawFinding>> = HashMap::new();
+            let mut pending = FuturesUnordered::new();
+            let timeout_secs = self.cfg.coordinator.agent_timeout_secs;
+            let agent_ctx_ref = &agent_ctx;
+            let diff_chunks_ref = &diff_chunks;
+            let prior_round_findings_ref = &prior_round_findings;
             for agent in &self.registry.agents {
                 let id = agent.id();
                 update_status(&mut statuses, id, ReviewerState::Running, None);
@@ -151,57 +157,65 @@ impl Coordinator {
                     round,
                     id: id.to_string(),
                 });
-                let output = match run_agent_for_round(
-                    agent.as_ref(),
-                    &agent_ctx,
-                    round,
-                    &diff_chunks,
-                    &prior_round_findings,
-                    self.cfg.coordinator.agent_timeout_secs,
-                )
-                .await
-                {
+                let id = id.to_string();
+                let agent_ref = agent.as_ref();
+                pending.push(async move {
+                    let output = run_agent_for_round(
+                        agent_ref,
+                        agent_ctx_ref,
+                        round,
+                        diff_chunks_ref,
+                        prior_round_findings_ref,
+                        timeout_secs,
+                    )
+                    .await;
+                    (id, output)
+                });
+            }
+            while let Some((id, output)) = pending.next().await {
+                let output = match output {
                     Ok(output) => output,
                     Err(err) => {
-                        update_status(&mut statuses, id, ReviewerState::Error, None);
+                        update_status(&mut statuses, &id, ReviewerState::Error, None);
                         self.emit(ProgressEvent::ParallelStatus {
                             round,
                             statuses: statuses.clone(),
                         });
                         self.emit(ProgressEvent::AgentError {
                             round,
-                            id: id.to_string(),
+                            id: id.clone(),
                             message: err.to_string(),
                         });
                         return Err(err);
                     }
                 };
                 self.consensus
-                    .ingest_round(&output.findings, round, id, &ctx.diff);
-                round_findings.insert(id.to_string(), output.findings.clone());
+                    .ingest_round(&output.findings, round, &id, &ctx.diff);
+                round_findings.insert(id.clone(), output.findings.clone());
                 let (summary, highlights, details) =
                     summarize_agent_output(&output, using_chunking);
                 self.emit(ProgressEvent::AgentReview {
                     round,
-                    id: id.to_string(),
+                    id: id.clone(),
                     summary,
                     highlights,
                     details,
                 });
                 let elapsed = started_at
-                    .remove(id)
+                    .remove(&id)
                     .map(|start| start.elapsed().as_secs_f32())
                     .unwrap_or(0.0);
-                update_status(&mut statuses, id, ReviewerState::Done, Some(elapsed));
+                update_status(&mut statuses, &id, ReviewerState::Done, Some(elapsed));
                 self.emit(ProgressEvent::ParallelStatus {
                     round,
                     statuses: statuses.clone(),
                 });
                 self.emit(ProgressEvent::AgentDone {
                     round,
-                    id: id.to_string(),
+                    id,
                 });
             }
+            drop(pending);
             prior_round_findings = round_findings;
             self.emit(ProgressEvent::RoundDone { round });
 
@@ -587,13 +601,13 @@ fn chunk_diff(diff: &str, max_lines_per_chunk: usize, max_chunks: usize) -> Vec<
     let mut current_lines = 0usize;
 
     for line in diff.lines() {
-        if line.starts_with("diff --git ") && current_lines >= max_lines_per_chunk {
+        if line.starts_with("diff --git ")
+            && current_lines >= max_lines_per_chunk
+            && chunks.len() + 1 < max_chunks
+        {
             chunks.push(current.clone());
             current.clear();
             current_lines = 0;
-            if chunks.len() >= max_chunks {
-                break;
-            }
         }
         current.push_str(line);
         current.push('\n');
@@ -646,6 +660,21 @@ mod tests {
             + &"+y\n".repeat(700);
         let chunks = chunk_diff(&diff, 500, 4);
         assert!(chunks.len() >= 2);
+        assert!(chunks.iter().any(|chunk| chunk.contains("diff --git a/b.rs b/b.rs")));
+    }
+
+    #[test]
+    fn chunking_keeps_remainder_in_last_chunk_when_chunk_limit_hit() {
+        let diff = "diff --git a/a.rs b/a.rs\n@@\n".to_string()
+            + &"+x\n".repeat(600)
+            + "diff --git a/b.rs b/b.rs\n@@\n"
+            + &"+y\n".repeat(600)
+            + "diff --git a/c.rs b/c.rs\n@@\n"
+            + &"+z\n".repeat(600);
+        let chunks = chunk_diff(&diff, 500, 2);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[1].contains("diff --git a/b.rs b/b.rs"));
+        assert!(chunks[1].contains("diff --git a/c.rs b/c.rs"));
     }
 
     #[test]

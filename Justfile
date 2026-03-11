@@ -1,5 +1,11 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
+docs-serve:
+  exec mdbook serve docs --open
+
+docs-build:
+  exec mdbook build docs
+
 crucible-pre-push:
   if [[ -z "$(git status --porcelain --untracked-files=all)" ]]; then
     echo "crucible: no local diff detected; skipping review"

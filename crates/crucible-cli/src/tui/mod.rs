@@ -6,13 +6,14 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use libcrucible::config::CrucibleConfig;
-use libcrucible::progress::{ProgressEvent, ReviewerState};
+use libcrucible::progress::{ProgressEvent, ReviewerState, TranscriptDirection};
 use libcrucible::report::{ReviewReport, Verdict};
 use ratatui::Terminal;
 use ratatui::layout::Alignment;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use std::collections::VecDeque;
 use std::io::{Write, stdout};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -50,6 +51,7 @@ struct ProgressState {
     agents: Vec<String>,
     statuses: std::collections::HashMap<String, AgentStatus>,
     reviews: std::collections::HashMap<String, AgentReviewState>,
+    transcript_window: VecDeque<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -179,6 +181,22 @@ pub async fn run_review_tui(
                 }
                 ProgressEvent::AgentStart { id, .. } => {
                     progress.statuses.insert(id.clone(), AgentStatus::Running);
+                }
+                ProgressEvent::AgentTranscript {
+                    id,
+                    direction,
+                    message,
+                } => {
+                    let prefix = match direction {
+                        TranscriptDirection::ToAgent => "->",
+                        TranscriptDirection::FromAgent => "<-",
+                    };
+                    progress
+                        .transcript_window
+                        .push_back(format!("{prefix} {id}: {}", truncate_line(message, 150)));
+                    while progress.transcript_window.len() > 2 {
+                        progress.transcript_window.pop_front();
+                    }
                 }
                 ProgressEvent::AgentReview {
                     id,
@@ -553,6 +571,13 @@ fn render_reviewing<'a>(progress: &'a ProgressState, spinner: &'static str) -> P
     if let Some(convergence) = &progress.convergence {
         lines.push(Line::from(""));
         lines.push(Line::from(convergence.clone()));
+    }
+    if !progress.transcript_window.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Conversation:"));
+        for item in &progress.transcript_window {
+            lines.push(Line::from(format!("  {}", item)));
+        }
     }
     for id in &progress.agents {
         let status = match progress

@@ -1,0 +1,11 @@
+[book]
+authors = ["Crucible Contributors"]
+language = "en"
+src = "src"
+title = "Crucible Documentation"
+description = "Documentation for Crucible, an autonomous multi-agent code review swarm."
+
+[output.html]
+git-repository-url = "https://github.com/jonochang/crucible"
+edit-url-template = "https://github.com/jonochang/crucible/edit/master/docs/{path}"
+site-url = "/crucible/"

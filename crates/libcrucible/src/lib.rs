@@ -41,12 +41,15 @@ pub async fn run_review_with_progress_run_id(
     tx: tokio::sync::mpsc::UnboundedSender<progress::ProgressEvent>,
     run_id: Uuid,
 ) -> Result<ReviewReport> {
+    plugins::set_progress_sender(Some(tx.clone()))?;
     let ctx =
         context::ReviewContext::from_push_with_progress(&std::env::current_dir()?, cfg, Some(&tx))
             .await?;
     let registry = PluginRegistry::from_config(cfg)?;
     let mut coord = Coordinator::new(registry, cfg.clone(), Some(tx), run_id);
-    coord.run(&ctx).await
+    let result = coord.run(&ctx).await;
+    let _ = plugins::set_progress_sender(None);
+    result
 }
 
 pub async fn run_review_with_progress_diff(
@@ -63,6 +66,7 @@ pub async fn run_review_with_progress_diff_run_id(
     diff: String,
     run_id: Uuid,
 ) -> Result<ReviewReport> {
+    plugins::set_progress_sender(Some(tx.clone()))?;
     let ctx = context::ReviewContext::from_diff_with_progress(
         &std::env::current_dir()?,
         cfg,
@@ -72,5 +76,7 @@ pub async fn run_review_with_progress_diff_run_id(
     .await?;
     let registry = PluginRegistry::from_config(cfg)?;
     let mut coord = Coordinator::new(registry, cfg.clone(), Some(tx), run_id);
-    coord.run(&ctx).await
+    let result = coord.run(&ctx).await;
+    let _ = plugins::set_progress_sender(None);
+    result
 }

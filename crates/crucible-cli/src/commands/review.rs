@@ -42,7 +42,10 @@ pub struct ReviewArgs {
     pub publish_github: bool,
     #[arg(long, help = "Enable verbose CLI agent logging")]
     pub verbose: bool,
-    #[arg(long, help = "Enable debug logging to crucible.log")]
+    #[arg(
+        long,
+        help = "Enable per-run debug logging to .crucible/runs/<run_id>/debug.log"
+    )]
     pub debug: bool,
     #[arg(long, help = "Keep TUI open after completion; default is auto-exit")]
     pub interactive: bool,
@@ -138,90 +141,122 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     {
         anyhow::bail!("GitHub review actions require a PR target");
     }
-    let diff_override = resolve_review_diff(&target, &args.git_remote)?;
-    if matches!(
-        target,
-        ReviewTarget::Local | ReviewTarget::CurrentBranchWithLocal
-    ) {
-        let diff = diff_override.as_deref().unwrap_or_default();
-        if diff.trim().is_empty() || count_changed_lines(diff) == 0 {
-            println!("No branch/local code changes detected; skipping review.");
-            return Ok(());
+    let pr_checkout = prepare_pr_checkout(&target)?;
+    let run_result: Result<CommandExit> = async {
+        let diff_override = resolve_review_diff(&target, &args.git_remote)?;
+        if matches!(
+            target,
+            ReviewTarget::Local | ReviewTarget::CurrentBranchWithLocal
+        ) {
+            let diff = diff_override.as_deref().unwrap_or_default();
+            if diff.trim().is_empty() || count_changed_lines(diff) == 0 {
+                println!("No branch/local code changes detected; skipping review.");
+                return Ok(CommandExit::Done);
+            }
         }
-    }
 
-    let use_tui = !args.hook
-        && args.export_issues.is_none()
-        && !args.json
-        && !args.github_dry_run
-        && !args.publish_github
-        && std::io::stdout().is_terminal();
-    if use_tui {
-        let scope_label = describe_review_scope(&target, &args.git_remote)
-            .unwrap_or_else(|_| "scope unavailable".to_string());
-        let exit_code = crate::tui::run_review_tui(
-            &cfg,
-            args.interactive,
-            diff_override.clone(),
-            scope_label,
-            args.output_report.clone(),
-            artifacts.clone(),
-        )
-        .await?;
-        std::process::exit(exit_code);
-    }
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let log = open_review_log(&artifacts)?;
-    let log = Arc::new(Mutex::new(log));
-    let cfg_for_review = cfg.clone();
-    let run_id_for_review = artifacts.run_id;
-    let mut review_handle = tokio::spawn(async move {
-        if let Some(diff) = diff_override {
-            libcrucible::run_review_with_progress_diff_run_id(
-                &cfg_for_review,
-                tx,
-                diff,
-                run_id_for_review,
+        let use_tui = !args.hook
+            && args.export_issues.is_none()
+            && !args.json
+            && !args.github_dry_run
+            && !args.publish_github
+            && std::io::stdout().is_terminal();
+        if use_tui {
+            let scope_label = describe_review_scope(&target, &args.git_remote)
+                .unwrap_or_else(|_| "scope unavailable".to_string());
+            let exit_code = crate::tui::run_review_tui(
+                &cfg,
+                args.interactive,
+                diff_override.clone(),
+                scope_label,
+                args.output_report.clone(),
+                artifacts.clone(),
             )
-            .await
-        } else {
-            libcrucible::run_review_with_progress_run_id(&cfg_for_review, tx, run_id_for_review)
+            .await?;
+            return Ok(CommandExit::Exit(exit_code));
+        }
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let log = open_review_log(&artifacts)?;
+        let log = Arc::new(Mutex::new(log));
+        let cfg_for_review = cfg.clone();
+        let run_id_for_review = artifacts.run_id;
+        let mut review_handle = tokio::spawn(async move {
+            if let Some(diff) = diff_override {
+                libcrucible::run_review_with_progress_diff_run_id(
+                    &cfg_for_review,
+                    tx,
+                    diff,
+                    run_id_for_review,
+                )
                 .await
-        }
-    });
-    let log_for_progress = log.clone();
-    let run_id_for_progress = artifacts.run_id;
-    let progress_handle = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            emit_progress(run_id_for_progress, &event);
-            let _ = write_log_event(&log_for_progress, run_id_for_progress, &event);
-        }
-    });
+            } else {
+                libcrucible::run_review_with_progress_run_id(&cfg_for_review, tx, run_id_for_review)
+                    .await
+            }
+        });
+        let log_for_progress = log.clone();
+        let run_id_for_progress = artifacts.run_id;
+        let progress_handle = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                emit_progress(run_id_for_progress, &event);
+                let _ = write_log_event(&log_for_progress, run_id_for_progress, &event);
+            }
+        });
 
-    let report = tokio::select! {
-        res = &mut review_handle => {
-            let report = res??;
-            let _ = progress_handle.await;
-            report
-        }
-        _ = tokio::signal::ctrl_c() => {
-            emit_progress(artifacts.run_id, &ProgressEvent::Canceled);
-            let _ = write_log_event(&log, artifacts.run_id, &ProgressEvent::Canceled);
-            review_handle.abort();
-            std::process::exit(130);
-        }
-    };
+        let report = tokio::select! {
+            res = &mut review_handle => {
+                let report = res??;
+                let _ = progress_handle.await;
+                report
+            }
+            _ = tokio::signal::ctrl_c() => {
+                emit_progress(artifacts.run_id, &ProgressEvent::Canceled);
+                let _ = write_log_event(&log, artifacts.run_id, &ProgressEvent::Canceled);
+                review_handle.abort();
+                return Ok(CommandExit::Exit(130));
+            }
+        };
 
-    if args.json {
+        if args.json {
+            let json = render_report_json(&report);
+            println!("{json}");
+            write_report_targets(&artifacts, args.output_report.as_ref(), &json)?;
+            write_log_json(&log, artifacts.run_id, &json);
+            write_log_report_sections(&log, artifacts.run_id, &report);
+            if let Some(path) = &args.export_issues {
+                export_issues(path, &build_issue_list(&report))?;
+            }
+            if args.github_dry_run || args.publish_github {
+                let pr = match &target {
+                    ReviewTarget::PullRequest(pr) => pr,
+                    _ => unreachable!("validated PR target above"),
+                };
+                handle_github_review_action(
+                    &report,
+                    pr,
+                    args.github_dry_run,
+                    args.publish_github,
+                    true,
+                )?;
+            }
+            return Ok(CommandExit::Done);
+        }
+
+        let issues = build_issue_list(&report);
+        print_report(&report, &issues);
+        if let Some(path) = &args.export_issues {
+            export_issues(path, &issues)?;
+            println!("\nExported issues to {}", path.display());
+        }
         let json = render_report_json(&report);
-        println!("{json}");
         write_report_targets(&artifacts, args.output_report.as_ref(), &json)?;
+        if let Some(path) = &args.output_report {
+            println!("Report written to {}", path.display());
+        }
+        println!("Run artifacts: {}", artifacts.run_dir.display());
         write_log_json(&log, artifacts.run_id, &json);
         write_log_report_sections(&log, artifacts.run_id, &report);
-        if let Some(path) = &args.export_issues {
-            export_issues(path, &build_issue_list(&report))?;
-        }
         if args.github_dry_run || args.publish_github {
             let pr = match &target {
                 ReviewTarget::PullRequest(pr) => pr,
@@ -232,43 +267,35 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
                 pr,
                 args.github_dry_run,
                 args.publish_github,
-                true,
+                false,
             )?;
         }
-        return Ok(());
-    }
 
-    let issues = build_issue_list(&report);
-    print_report(&report, &issues);
-    if let Some(path) = &args.export_issues {
-        export_issues(path, &issues)?;
-        println!("\nExported issues to {}", path.display());
-    }
-    let json = render_report_json(&report);
-    write_report_targets(&artifacts, args.output_report.as_ref(), &json)?;
-    if let Some(path) = &args.output_report {
-        println!("Report written to {}", path.display());
-    }
-    println!("Run artifacts: {}", artifacts.run_dir.display());
-    write_log_json(&log, artifacts.run_id, &json);
-    write_log_report_sections(&log, artifacts.run_id, &report);
-    if args.github_dry_run || args.publish_github {
-        let pr = match &target {
-            ReviewTarget::PullRequest(pr) => pr,
-            _ => unreachable!("validated PR target above"),
-        };
-        handle_github_review_action(&report, pr, args.github_dry_run, args.publish_github, false)?;
-    }
+        if args.hook {
+            let code = match report.verdict {
+                Verdict::Block => 1,
+                _ => 0,
+            };
+            return Ok(CommandExit::Exit(code));
+        }
 
-    if args.hook {
-        let code = match report.verdict {
-            Verdict::Block => 1,
-            _ => 0,
-        };
-        std::process::exit(code);
+        Ok(CommandExit::Done)
     }
+    .await;
 
-    Ok(())
+    let restore_result = restore_checkout_if_needed(&pr_checkout);
+    match (run_result, restore_result) {
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+        (Err(run_err), Err(restore_err)) => Err(run_err.context(format!(
+            "also failed to restore original checkout: {}",
+            restore_err
+        ))),
+        (Ok(CommandExit::Done), Ok(())) => Ok(()),
+        (Ok(CommandExit::Exit(code)), Ok(())) => {
+            std::process::exit(code);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +312,11 @@ enum ReviewTarget {
     Files(Vec<String>),
     /// Review a GitHub pull request (number or URL).
     PullRequest(String),
+}
+
+enum CommandExit {
+    Done,
+    Exit(i32),
 }
 
 #[derive(Debug, Deserialize)]
@@ -367,7 +399,6 @@ fn resolve_review_diff(target: &ReviewTarget, git_remote: &str) -> Result<Option
             Ok(Some(diff))
         }
         ReviewTarget::PullRequest(pr) => {
-            checkout_pr_branch(pr)?;
             let diff = run_cmd_capture("gh", &["pr", "diff", pr.as_str()])?;
             if diff.trim().is_empty() {
                 anyhow::bail!("no diff returned for PR {}", pr);
@@ -410,6 +441,48 @@ fn checkout_pr_branch(pr: &str) -> Result<()> {
         .status()?;
     if !status.success() {
         anyhow::bail!("failed to checkout PR branch via `gh pr checkout {}`", pr);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct CheckoutRestoreTarget {
+    display: String,
+}
+
+fn prepare_pr_checkout(target: &ReviewTarget) -> Result<Option<CheckoutRestoreTarget>> {
+    let ReviewTarget::PullRequest(pr) = target else {
+        return Ok(None);
+    };
+    let restore = capture_checkout_restore_target()?;
+    checkout_pr_branch(pr)?;
+    Ok(Some(restore))
+}
+
+fn capture_checkout_restore_target() -> Result<CheckoutRestoreTarget> {
+    let repo = Repository::discover(".")?;
+    let head = repo.head()?;
+    let display = if head.is_branch() {
+        head.shorthand()
+            .ok_or_else(|| anyhow::anyhow!("failed to determine current branch name"))?
+            .to_string()
+    } else {
+        head.target()
+            .ok_or_else(|| anyhow::anyhow!("failed to determine detached HEAD target"))?
+            .to_string()
+    };
+    Ok(CheckoutRestoreTarget { display })
+}
+
+fn restore_checkout_if_needed(target: &Option<CheckoutRestoreTarget>) -> Result<()> {
+    let Some(target) = target else {
+        return Ok(());
+    };
+    let status = std::process::Command::new("git")
+        .args(["checkout", "--quiet", target.display.as_str()])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to restore original checkout {}", target.display);
     }
     Ok(())
 }
@@ -1100,6 +1173,17 @@ fn emit_progress(run_id: Uuid, event: &ProgressEvent) {
         }
         ProgressEvent::AgentStart { round, id } => {
             eprintln!("[progress] agent:start round={} id={}", round, id);
+        }
+        ProgressEvent::AgentTranscript {
+            id,
+            direction,
+            message,
+        } => {
+            let arrow = match direction {
+                libcrucible::progress::TranscriptDirection::ToAgent => "->",
+                libcrucible::progress::TranscriptDirection::FromAgent => "<-",
+            };
+            eprintln!("[agent-chat] {} {} {}", arrow, id, message);
         }
         ProgressEvent::AgentReview {
             round,
