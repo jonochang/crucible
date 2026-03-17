@@ -53,7 +53,7 @@ crucible hook install
 ## Requirements
 
 - Rust toolchain (or `nix develop`)
-- Git repository (Crucible reviews the working tree diff vs `HEAD`)
+- Git repository (default review mode compares branch/worktree changes against the remote default branch when available, otherwise local changes vs `HEAD`)
 - Agent CLIs on `PATH`: `claude`, `codex`, `gemini`, `opencode`
 - `just` on `PATH` (for the managed pre-push hook workflow)
 
@@ -199,7 +199,7 @@ For auto-fix requests, agents must return:
 
 ### `crucible review`
 
-Runs a multi-agent review of your working tree diff vs `HEAD`.
+Runs a multi-agent review of your branch and/or working tree changes.
 
 ```bash
 crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [--hook] [--json] [--verbose] [--debug] [--interactive] [--reviewer <id>] [--max-rounds <n>] [--export-issues <path>] [--output-report <path>] [--github-dry-run] [--publish-github]
@@ -207,6 +207,7 @@ crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [
 
 Behavior:
 - `PR` (number or URL) checks out the PR branch (`gh pr checkout`) and reviews that PR diff (`gh pr diff`).
+- Default mode reviews current branch plus local changes against the remote default branch when available; otherwise it falls back to local uncommitted changes.
 - `--local` reviews local uncommitted changes (`git diff HEAD`).
 - `--repo` reviews branch diff against remote default branch (`origin/<default>...HEAD`).
 - `--branch [base]` reviews current branch against base (default `main`).
@@ -243,7 +244,7 @@ Behavior:
 
 ### `crucible hook`
 
-Manage a managed `pre-push` hook that runs `crucible review --hook`.
+Manage a managed `pre-push` hook that runs the repo’s `just crucible-pre-push` recipe.
 
 ```bash
 crucible hook install [--force]
@@ -253,10 +254,10 @@ crucible hook status
 
 Behavior:
 - `install` writes `.git/hooks/pre-push` that runs `just crucible-pre-push`.
-- `crucible-pre-push` skips if no local diff, otherwise runs `crucible review --hook --reviewer claude-code --max-rounds 1`.
+- `crucible-pre-push` skips if no local diff, otherwise runs `crucible review --local --hook --reviewer claude-code --max-rounds 1`.
 - If the hook exists and is not managed by Crucible, use `--force` to overwrite.
 - `uninstall` only removes hooks managed by Crucible.
-- `status` prints whether the hook is installed and whether `crucible` is on `PATH`.
+- `status` prints whether the hook is installed and whether `crucible` and `just` are on `PATH`.
 
 ### `crucible config`
 
@@ -273,7 +274,7 @@ Behavior:
 
 ### `crucible session`
 
-Session management is reserved for future releases.
+Session management is not implemented yet.
 
 ```bash
 crucible session list

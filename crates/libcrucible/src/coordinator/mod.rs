@@ -146,16 +146,17 @@ impl Coordinator {
             let diff_chunks_ref = &diff_chunks;
             let prior_round_findings_ref = &prior_round_findings;
             for agent in &self.registry.agents {
-                let id = agent.id();
-                update_status(&mut statuses, id, ReviewerState::Running, None);
-                started_at.insert(id.to_string(), Instant::now());
+                let agent = agent.clone();
+                let id = agent.id().to_string();
+                update_status(&mut statuses, &id, ReviewerState::Running, None);
+                started_at.insert(id.clone(), Instant::now());
                 self.emit(ProgressEvent::ParallelStatus {
                     round,
                     statuses: statuses.clone(),
                 });
                 self.emit(ProgressEvent::AgentStart {
                     round,
-                    id: id.to_string(),
+                    id: id.clone(),
                 });
                 let id = id.to_string();
                 let agent_ref = agent.as_ref();
@@ -891,10 +892,11 @@ impl ConsensusTracker {
                 let mut merged_key = None;
                 for existing in self.clusters.keys() {
                     if same_cluster(existing, &key)
-                        || message_similar(
-                            &self.clusters[existing].findings[0].message,
-                            &finding.message,
-                        )
+                        || (existing.file == key.file
+                            && message_similar(
+                                &self.clusters[existing].findings[0].message,
+                                &finding.message,
+                            ))
                     {
                         merged_key = Some(existing.clone());
                         break;
@@ -956,7 +958,7 @@ impl ConsensusTracker {
         let mut all = self
             .clusters
             .values()
-            .flat_map(|state| state.findings.clone())
+            .map(|state| dedup_cluster(state))
             .collect::<Vec<_>>();
         all.extend(self.loose.clone());
         calibrate_low_confidence(&mut all);
@@ -966,6 +968,33 @@ impl ConsensusTracker {
 
 fn same_cluster(a: &FindingKey, b: &FindingKey) -> bool {
     a.file == b.file && spans_overlap(&a.span, &b.span)
+}
+
+fn dedup_cluster(state: &ClusterState) -> Finding {
+    let mut findings = state.findings.clone();
+    findings.sort_by(|a, b| {
+        b.severity
+            .cmp(&a.severity)
+            .then(confidence_rank(&b.confidence).cmp(&confidence_rank(&a.confidence)))
+            .then(a.round.cmp(&b.round))
+    });
+    let mut finding = findings
+        .into_iter()
+        .next()
+        .expect("cluster has at least one finding");
+    let mut raised_by = state.agents.iter().cloned().collect::<Vec<_>>();
+    raised_by.sort();
+    finding.raised_by = raised_by;
+    finding.severity = state.severity.clone();
+    finding
+}
+
+fn confidence_rank(confidence: &crate::report::Confidence) -> u8 {
+    match confidence {
+        crate::report::Confidence::Low => 0,
+        crate::report::Confidence::Medium => 1,
+        crate::report::Confidence::High => 2,
+    }
 }
 
 fn spans_overlap(a: &LineSpan, b: &LineSpan) -> bool {

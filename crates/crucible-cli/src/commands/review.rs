@@ -1,7 +1,7 @@
 use crate::log_helpers;
 use anyhow::Result;
 use clap::Args;
-use git2::{DiffFormat, DiffOptions, Repository};
+use git2::Repository;
 use libcrucible::config::CrucibleConfig;
 use libcrucible::progress::ProgressEvent;
 use libcrucible::report::{CanonicalIssue, ReviewReport, Severity, Verdict};
@@ -354,10 +354,14 @@ fn resolve_review_diff(target: &ReviewTarget, git_remote: &str) -> Result<Option
     let repo = Repository::discover(".")?;
     match target {
         ReviewTarget::CurrentBranchWithLocal => {
-            if let Some(base_ref) = resolve_base_ref_for_current_branch(&repo, git_remote)? {
+            if let Some(base_ref) = resolve_remote_base_ref(&repo, git_remote)? {
                 let diff = diff_base_to_workdir_with_index(&repo, &base_ref, "HEAD")?;
                 if diff.trim().is_empty() {
-                    return Ok(None);
+                    let local_diff = diff_worktree_vs_head(&repo)?;
+                    if local_diff.trim().is_empty() {
+                        return Ok(None);
+                    }
+                    return Ok(Some(local_diff));
                 }
                 Ok(Some(diff))
             } else {
@@ -418,12 +422,19 @@ fn resolve_remote_default_branch(repo: &Repository, git_remote: &str) -> Result<
     Ok(target.strip_prefix(&prefix).unwrap_or("main").to_string())
 }
 
+fn resolve_remote_base_ref(repo: &Repository, git_remote: &str) -> Result<Option<String>> {
+    if let Ok(branch) = resolve_remote_default_branch(repo, git_remote) {
+        return Ok(Some(format!("refs/remotes/{git_remote}/{branch}")));
+    }
+    Ok(None)
+}
+
 fn resolve_base_ref_for_current_branch(
     repo: &Repository,
     git_remote: &str,
 ) -> Result<Option<String>> {
-    if let Ok(branch) = resolve_remote_default_branch(repo, git_remote) {
-        return Ok(Some(format!("refs/remotes/{git_remote}/{branch}")));
+    if let Some(base_ref) = resolve_remote_base_ref(repo, git_remote)? {
+        return Ok(Some(base_ref));
     }
     if repo.find_reference("refs/heads/main").is_ok() {
         return Ok(Some("refs/heads/main".to_string()));
@@ -554,32 +565,20 @@ fn describe_review_scope(target: &ReviewTarget, git_remote: &str) -> Result<Stri
 }
 
 fn diff_worktree_vs_head(repo: &Repository) -> Result<String> {
-    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-    let mut opts = DiffOptions::new();
-    opts.include_untracked(true);
-    let diff = repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
-    render_diff_to_patch(&diff)
+    run_git_diff(repo, &["diff", "--binary", "HEAD"])
 }
 
 fn diff_worktree_vs_head_for_files(repo: &Repository, files: &[String]) -> Result<String> {
-    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-    let mut opts = DiffOptions::new();
-    opts.include_untracked(true);
+    let mut args = vec!["diff", "--binary", "HEAD", "--"];
     for file in files {
-        opts.pathspec(file);
+        args.push(file.as_str());
     }
-    let diff = repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
-    render_diff_to_patch(&diff)
+    run_git_diff(repo, &args)
 }
 
 fn diff_three_dot_refs(repo: &Repository, base_ref: &str, head_ref: &str) -> Result<String> {
-    let base_commit = peel_commit(repo, base_ref)?;
-    let head_commit = peel_commit(repo, head_ref)?;
-    let merge_base = repo.merge_base(base_commit.id(), head_commit.id())?;
-    let merge_base_tree = repo.find_commit(merge_base)?.tree()?;
-    let head_tree = head_commit.tree()?;
-    let diff = repo.diff_tree_to_tree(Some(&merge_base_tree), Some(&head_tree), None)?;
-    render_diff_to_patch(&diff)
+    let range = format!("{base_ref}...{head_ref}");
+    run_git_diff(repo, &["diff", "--binary", &range])
 }
 
 fn diff_base_to_workdir_with_index(
@@ -587,31 +586,24 @@ fn diff_base_to_workdir_with_index(
     base_ref: &str,
     head_ref: &str,
 ) -> Result<String> {
-    let base_commit = peel_commit(repo, base_ref)?;
-    let head_commit = peel_commit(repo, head_ref)?;
-    let merge_base = repo.merge_base(base_commit.id(), head_commit.id())?;
-    let merge_base_tree = repo.find_commit(merge_base)?.tree()?;
-    let mut opts = DiffOptions::new();
-    opts.include_untracked(true);
-    let diff = repo.diff_tree_to_workdir_with_index(Some(&merge_base_tree), Some(&mut opts))?;
-    render_diff_to_patch(&diff)
+    let merge_base = run_cmd_capture("git", &["merge-base", base_ref, head_ref])?;
+    let merge_base = merge_base.trim().to_string();
+    run_git_diff(repo, &["diff", "--binary", &merge_base])
 }
 
-fn peel_commit<'a>(repo: &'a Repository, reference: &str) -> Result<git2::Commit<'a>> {
-    let obj = repo.revparse_single(reference)?;
-    let commit = obj.peel_to_commit()?;
-    Ok(commit)
-}
-
-fn render_diff_to_patch(diff: &git2::Diff<'_>) -> Result<String> {
-    let mut out = String::new();
-    diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-        if let Ok(content) = std::str::from_utf8(line.content()) {
-            push_diff_line(&mut out, line.origin(), content);
-        }
-        true
-    })?;
-    Ok(out)
+fn run_git_diff(repo: &Repository, args: &[&str]) -> Result<String> {
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("repo has no workdir"))?;
+    let output = std::process::Command::new("git")
+        .current_dir(repo_root)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git {:?} failed: {}", args, stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn resolve_github_review_context(pr: &str) -> Result<GithubReviewContext> {

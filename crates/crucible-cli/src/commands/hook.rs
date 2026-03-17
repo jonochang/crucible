@@ -32,6 +32,7 @@ pub fn run(args: HookArgs) -> Result<()> {
 }
 
 fn install(force: bool) -> Result<()> {
+    ensure_prerequisites()?;
     let hook_path = hook_path()?;
     if hook_path.exists() {
         let existing = fs::read_to_string(&hook_path).unwrap_or_default();
@@ -81,8 +82,32 @@ fn status() -> Result<()> {
             .unwrap_or_default()
             .contains(HEADER);
     let on_path = which::which("crucible").is_ok();
+    let just_on_path = which::which("just").is_ok();
+    let has_recipe = std::env::current_dir()
+        .ok()
+        .map(|dir| dir.join("Justfile").exists() || dir.join("justfile").exists())
+        .unwrap_or(false);
     println!("Hook installed: {}", if installed { "yes" } else { "no" });
     println!("crucible on PATH: {}", if on_path { "yes" } else { "no" });
+    println!("just on PATH: {}", if just_on_path { "yes" } else { "no" });
+    println!(
+        "crucible-pre-push recipe available: {}",
+        if has_recipe { "yes" } else { "no" }
+    );
+    Ok(())
+}
+
+fn ensure_prerequisites() -> Result<()> {
+    if which::which("just").is_err() {
+        return Err(anyhow!("`just` is required for the managed pre-push hook"));
+    }
+    let cwd = std::env::current_dir().context("get current dir")?;
+    let has_justfile = cwd.join("Justfile").exists() || cwd.join("justfile").exists();
+    if !has_justfile {
+        return Err(anyhow!(
+            "managed hook expects a Justfile with a `crucible-pre-push` recipe"
+        ));
+    }
     Ok(())
 }
 

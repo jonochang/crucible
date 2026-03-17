@@ -10,11 +10,12 @@
 ## `crucible review`
 
 ```bash
-crucible review [PR] [--hook] [--json] [--verbose] [--interactive] [--export-issues <path>] [--output-report <path>] [--github-dry-run] [--publish-github]
+crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [--hook] [--json] [--verbose] [--interactive] [--export-issues <path>] [--output-report <path>] [--github-dry-run] [--publish-github] [--reviewer <id>] [--max-rounds <n>] [--git-remote <name>]
 ```
 
 Flags:
 - `--interactive`: keep TUI open at completion (default is auto-exit).
+- Default mode reviews current branch plus local changes against the remote default branch when available; otherwise it falls back to local uncommitted changes.
 - `--json`: print report JSON to stdout.
 - `--hook`: return hook-friendly exit code from verdict.
 - `--verbose`: forward richer agent CLI debug output.

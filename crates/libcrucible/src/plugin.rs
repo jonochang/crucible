@@ -5,6 +5,7 @@ use crate::progress::ConvergenceVerdict;
 use crate::report::{AutoFix, CanonicalIssue, Finding, RawFinding};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct AgentReviewOutput {
@@ -73,9 +74,9 @@ pub trait FocusAnalyzer: Send + Sync {
 }
 
 pub struct PluginRegistry {
-    pub agents: Vec<Box<dyn AgentPlugin>>,
-    pub judge: Box<dyn AgentPlugin>,
-    pub analyzer: Box<dyn FocusAnalyzer>,
+    pub agents: Vec<Arc<dyn AgentPlugin>>,
+    pub judge: Arc<dyn AgentPlugin>,
+    pub analyzer: Arc<dyn FocusAnalyzer>,
 }
 
 impl PluginRegistry {
@@ -84,14 +85,14 @@ impl PluginRegistry {
             return Err(anyhow!("no agents configured"));
         }
 
-        let mut agents: Vec<Box<dyn AgentPlugin>> = Vec::new();
+        let mut agents: Vec<Arc<dyn AgentPlugin>> = Vec::new();
         for id in &cfg.plugins.agents {
             let plugin_cfg = cfg
                 .plugins
                 .resolve_role(id)
                 .ok_or_else(|| anyhow!("missing config for plugin {id}"))?;
             let plugin = crate::plugins::cli_agent::CliAgentPlugin::from_config(id, plugin_cfg);
-            agents.push(Box::new(plugin));
+            agents.push(Arc::new(plugin));
         }
 
         let judge_cfg = cfg
@@ -112,8 +113,8 @@ impl PluginRegistry {
 
         Ok(Self {
             agents,
-            judge: Box::new(judge),
-            analyzer: Box::new(analyzer),
+            judge: Arc::new(judge),
+            analyzer: Arc::new(analyzer),
         })
     }
 }

@@ -11,7 +11,7 @@ nix profile install github:jonochang/crucible
 # Generate config
 crucible config init
 
-# Run a review (TUI if stdout is a terminal)
+# Run a review (defaults to branch+local against the remote default branch when available)
 crucible review
 ```
 
@@ -20,10 +20,11 @@ crucible review
 ### `crucible review`
 
 ```bash
-crucible review [--hook] [--json] [--verbose]
+crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [--hook] [--json] [--verbose] [--interactive] [--export-issues <path>] [--reviewer <id>] [--max-rounds <n>] [--git-remote <name>]
 ```
 
 Behavior:
+- Default mode reviews current branch plus local changes against the remote default branch when available; otherwise it falls back to local uncommitted changes.
 - If stdout is a TTY and `--hook` is not set, it launches the TUI.
 - `--json` prints the full report as JSON (no TUI).
 - `--hook` sets the exit code based on the verdict.
@@ -38,10 +39,11 @@ crucible hook status
 ```
 
 Behavior:
-- `install` writes `.git/hooks/pre-push` and runs `crucible review --hook`.
+- `install` writes `.git/hooks/pre-push` and runs `just crucible-pre-push`.
+- The default `crucible-pre-push` recipe runs `crucible review --local --hook --reviewer claude-code --max-rounds 1`.
 - If a pre-push hook exists and is not managed by Crucible, use `--force` to overwrite.
 - `uninstall` only removes hooks managed by Crucible.
-- `status` prints whether the hook is installed and whether `crucible` is on `PATH`.
+- `status` prints whether the hook is installed and whether `crucible` and `just` are on `PATH`.
 
 ### `crucible config`
 
@@ -63,7 +65,7 @@ crucible session delete <id>
 ```
 
 Behavior:
-- Session commands are reserved for future releases.
+- Session commands currently return an error because they are not implemented yet.
 
 ### `crucible version`
 

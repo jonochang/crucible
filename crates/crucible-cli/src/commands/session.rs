@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 
 #[derive(Args)]
@@ -15,6 +15,5 @@ pub enum SessionCommand {
 }
 
 pub fn run(_args: SessionArgs) -> Result<()> {
-    println!("Session commands are not available in MVP");
-    Ok(())
+    bail!("session commands are not implemented yet")
 }
