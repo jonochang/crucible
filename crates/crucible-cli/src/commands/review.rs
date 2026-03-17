@@ -141,7 +141,6 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     {
         anyhow::bail!("GitHub review actions require a PR target");
     }
-    let pr_checkout = prepare_pr_checkout(&target)?;
     let run_result: Result<CommandExit> = async {
         let diff_override = resolve_review_diff(&target, &args.git_remote)?;
         if matches!(
@@ -283,16 +282,10 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     }
     .await;
 
-    let restore_result = restore_checkout_if_needed(&pr_checkout);
-    match (run_result, restore_result) {
-        (Err(err), Ok(())) => Err(err),
-        (Ok(_), Err(err)) => Err(err),
-        (Err(run_err), Err(restore_err)) => Err(run_err.context(format!(
-            "also failed to restore original checkout: {}",
-            restore_err
-        ))),
-        (Ok(CommandExit::Done), Ok(())) => Ok(()),
-        (Ok(CommandExit::Exit(code)), Ok(())) => {
+    match run_result {
+        Err(err) => Err(err),
+        Ok(CommandExit::Done) => Ok(()),
+        Ok(CommandExit::Exit(code)) => {
             std::process::exit(code);
         }
     }
@@ -443,59 +436,6 @@ fn resolve_base_ref_for_current_branch(
         return Ok(Some("refs/heads/master".to_string()));
     }
     Ok(None)
-}
-
-/// Checkout the PR branch into the current repository using GitHub CLI.
-fn checkout_pr_branch(pr: &str) -> Result<()> {
-    let status = std::process::Command::new("gh")
-        .args(["pr", "checkout", pr])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to checkout PR branch via `gh pr checkout {}`", pr);
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct CheckoutRestoreTarget {
-    display: String,
-}
-
-fn prepare_pr_checkout(target: &ReviewTarget) -> Result<Option<CheckoutRestoreTarget>> {
-    let ReviewTarget::PullRequest(pr) = target else {
-        return Ok(None);
-    };
-    let restore = capture_checkout_restore_target()?;
-    checkout_pr_branch(pr)?;
-    Ok(Some(restore))
-}
-
-fn capture_checkout_restore_target() -> Result<CheckoutRestoreTarget> {
-    let repo = Repository::discover(".")?;
-    let head = repo.head()?;
-    let display = if head.is_branch() {
-        head.shorthand()
-            .ok_or_else(|| anyhow::anyhow!("failed to determine current branch name"))?
-            .to_string()
-    } else {
-        head.target()
-            .ok_or_else(|| anyhow::anyhow!("failed to determine detached HEAD target"))?
-            .to_string()
-    };
-    Ok(CheckoutRestoreTarget { display })
-}
-
-fn restore_checkout_if_needed(target: &Option<CheckoutRestoreTarget>) -> Result<()> {
-    let Some(target) = target else {
-        return Ok(());
-    };
-    let status = std::process::Command::new("git")
-        .args(["checkout", "--quiet", target.display.as_str()])
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("failed to restore original checkout {}", target.display);
-    }
-    Ok(())
 }
 
 /// Run a command and capture stdout, surfacing stderr on failure.

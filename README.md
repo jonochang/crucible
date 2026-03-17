@@ -206,7 +206,7 @@ crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [
 ```
 
 Behavior:
-- `PR` (number or URL) checks out the PR branch (`gh pr checkout`) and reviews that PR diff (`gh pr diff`).
+- `PR` (number or URL) reviews that PR diff via `gh pr diff` without checking out the branch.
 - Default mode reviews current branch plus local changes against the remote default branch when available; otherwise it falls back to local uncommitted changes.
 - `--local` reviews local uncommitted changes (`git diff HEAD`).
 - `--repo` reviews branch diff against remote default branch (`origin/<default>...HEAD`).
