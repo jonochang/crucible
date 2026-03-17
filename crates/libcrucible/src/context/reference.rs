@@ -2,7 +2,8 @@ use crate::config::ContextConfig;
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Parser};
@@ -108,8 +109,12 @@ pub fn trace_references(
         regexes.insert(sym.name.clone(), re);
     }
 
-    let mut files_scanned = 0usize;
-    for entry in WalkDir::new(repo_root).into_iter().filter_map(Result::ok) {
+    let mut candidates = Vec::new();
+    for entry in WalkDir::new(repo_root)
+        .max_depth(cfg.reference_max_depth.max(1))
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         let path = entry.path();
         if path.is_dir() {
             continue;
@@ -122,18 +127,21 @@ pub fn trace_references(
             continue;
         }
 
-        files_scanned += 1;
-        if files_scanned > cfg.reference_max_files {
-            break;
-        }
+        candidates.push(path.strip_prefix(repo_root).unwrap_or(path).to_path_buf());
+    }
 
-        let contents = fs::read_to_string(path).unwrap_or_default();
+    candidates.sort_by(|a, b| compare_reference_paths(a, b, symbols));
+    candidates.truncate(cfg.reference_max_files);
+
+    for relative_path in candidates {
+        let path = repo_root.join(&relative_path);
+        let contents = fs::read_to_string(&path).unwrap_or_default();
         for (idx, line) in contents.lines().enumerate() {
             for (name, re) in &regexes {
                 if re.is_match(line) {
                     refs.push(Reference {
                         symbol: name.clone(),
-                        file: path.strip_prefix(repo_root).unwrap_or(path).to_path_buf(),
+                        file: relative_path.clone(),
                         line: (idx + 1) as u32,
                         snippet: line.trim().to_string(),
                     });
@@ -191,4 +199,90 @@ fn parse_hunk_range(line: &str) -> Option<LineRange> {
     let len: u32 = iter.next().unwrap_or("1").parse().ok()?;
     let end = if len == 0 { start } else { start + len - 1 };
     Some(LineRange { start, end })
+}
+
+fn compare_reference_paths(a: &Path, b: &Path, symbols: &[Symbol]) -> Ordering {
+    reference_rank(a, symbols)
+        .cmp(&reference_rank(b, symbols))
+        .then_with(|| a.cmp(b))
+}
+
+fn reference_rank(path: &Path, symbols: &[Symbol]) -> (u8, usize, usize, String) {
+    let changed_files = symbols.iter().map(|s| s.file.as_path()).collect::<HashSet<_>>();
+    let same_file = changed_files.contains(path);
+    let best_distance = symbols
+        .iter()
+        .map(|symbol| directory_distance(path, &symbol.file))
+        .min()
+        .unwrap_or(usize::MAX);
+    let name_overlap = symbols
+        .iter()
+        .filter(|symbol| path.to_string_lossy().contains(symbol.name.as_str()))
+        .count();
+
+    (
+        if same_file { 0 } else { 1 },
+        best_distance,
+        usize::MAX - name_overlap,
+        path.to_string_lossy().into_owned(),
+    )
+}
+
+fn directory_distance(a: &Path, b: &Path) -> usize {
+    let a_components = a.parent().into_iter().flat_map(|p| p.components()).count();
+    let b_components = b.parent().into_iter().flat_map(|p| p.components()).count();
+    let common = a
+        .parent()
+        .into_iter()
+        .flat_map(|p| p.components())
+        .zip(b.parent().into_iter().flat_map(|p| p.components()))
+        .take_while(|(left, right)| left == right)
+        .count();
+    (a_components - common) + (b_components - common)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Symbol, SymbolKind, compare_reference_paths, directory_distance};
+    use std::cmp::Ordering;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn directory_distance_prefers_nearby_files() {
+        assert_eq!(directory_distance(Path::new("src/a.rs"), Path::new("src/b.rs")), 0);
+        assert_eq!(
+            directory_distance(Path::new("src/a.rs"), Path::new("src/nested/b.rs")),
+            1
+        );
+        assert_eq!(
+            directory_distance(Path::new("src/a.rs"), Path::new("tests/b.rs")),
+            2
+        );
+    }
+
+    #[test]
+    fn reference_sort_prefers_changed_file_and_nearby_paths() {
+        let symbols = vec![Symbol {
+            name: "widget".to_string(),
+            kind: SymbolKind::Struct,
+            file: PathBuf::from("src/widget.rs"),
+        }];
+
+        assert_eq!(
+            compare_reference_paths(
+                Path::new("src/widget.rs"),
+                Path::new("tests/widget.rs"),
+                &symbols
+            ),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_reference_paths(
+                Path::new("src/other.rs"),
+                Path::new("tests/widget.rs"),
+                &symbols
+            ),
+            Ordering::Less
+        );
+    }
 }
