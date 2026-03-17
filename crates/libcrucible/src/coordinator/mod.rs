@@ -141,10 +141,6 @@ impl Coordinator {
 
             let mut round_findings: HashMap<String, Vec<RawFinding>> = HashMap::new();
             let mut pending = FuturesUnordered::new();
-            let timeout_secs = self.cfg.coordinator.agent_timeout_secs;
-            let agent_ctx_ref = &agent_ctx;
-            let diff_chunks_ref = &diff_chunks;
-            let prior_round_findings_ref = &prior_round_findings;
             for agent in &self.registry.agents {
                 let agent = agent.clone();
                 let id = agent.id().to_string();
@@ -158,15 +154,17 @@ impl Coordinator {
                     round,
                     id: id.clone(),
                 });
-                let id = id.to_string();
-                let agent_ref = agent.as_ref();
+                let agent_ctx = agent_ctx.clone();
+                let diff_chunks = diff_chunks.clone();
+                let prior_round_findings = prior_round_findings.clone();
+                let timeout_secs = self.cfg.coordinator.agent_timeout_secs;
                 pending.push(async move {
                     let output = run_agent_for_round(
-                        agent_ref,
-                        agent_ctx_ref,
+                        agent.as_ref(),
+                        &agent_ctx,
                         round,
-                        diff_chunks_ref,
-                        prior_round_findings_ref,
+                        &diff_chunks,
+                        &prior_round_findings,
                         timeout_secs,
                     )
                     .await;

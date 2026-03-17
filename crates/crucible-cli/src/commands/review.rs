@@ -1297,16 +1297,6 @@ fn write_report_targets(
     Ok(())
 }
 
-fn push_diff_line(buf: &mut String, origin: char, content: &str) {
-    match origin {
-        '+' | '-' | ' ' => {
-            buf.push(origin);
-            buf.push_str(content);
-        }
-        _ => buf.push_str(content),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
