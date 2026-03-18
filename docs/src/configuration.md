@@ -55,4 +55,4 @@ paths = []
 
 ## Plugin stanzas
 
-Each plugin can define a command, arguments, persona, and role weighting. The agent command must accept prompt text on stdin and emit strict JSON on stdout.
+Each plugin can define a command, arguments, persona, and role weighting. Generic agent commands should accept prompt text on stdin and emit strict JSON on stdout. Built-in defaults also adapt `claude`, `gemini`, and `opencode` to their non-interactive JSON modes automatically.

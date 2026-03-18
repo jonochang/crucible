@@ -63,6 +63,7 @@ impl CliAgentPlugin {
     fn run_cli<T: for<'de> Deserialize<'de>>(&self, system: String, user: String) -> Result<T> {
         let is_claude = self.command == "claude";
         let is_gemini = self.command == "gemini";
+        let is_opencode = self.command == "opencode";
         debug_log_line(&format!(
             "[{}] invoking {} {:?}",
             self.id, self.command, self.args
@@ -81,6 +82,8 @@ impl CliAgentPlugin {
             user
         } else if is_gemini {
             format!("System: {}\n\nuser: {}", system, user)
+        } else if is_opencode {
+            format!("{system}\n\n---\n\n{user}")
         } else {
             format!("[SYSTEM]\n{}\n\n[USER]\n{}\n", system, user)
         };
@@ -105,9 +108,30 @@ impl CliAgentPlugin {
             }
             cmd.arg(&prompt);
         }
+        if is_opencode {
+            let has_run = self.args.iter().any(|a| a == "run");
+            let has_prompt_flag = self.args.iter().any(|a| a == "-p" || a == "--prompt");
+            let has_format_flag = self
+                .args
+                .iter()
+                .any(|a| a == "-f" || a == "--output-format" || a == "--format");
+            if has_run {
+                if !has_format_flag {
+                    cmd.args(["--format", "json"]);
+                }
+                cmd.arg(&prompt);
+            } else {
+                if !has_prompt_flag {
+                    cmd.args(["-p", &prompt]);
+                }
+                if !has_format_flag {
+                    cmd.args(["-f", "json"]);
+                }
+            }
+        }
 
         let mut child = cmd
-            .stdin(if is_gemini {
+            .stdin(if is_gemini || is_opencode {
                 Stdio::null()
             } else {
                 Stdio::piped()
@@ -117,7 +141,7 @@ impl CliAgentPlugin {
             .spawn()
             .with_context(|| format!("spawn {}", self.command))?;
 
-        if !is_gemini {
+        if !is_gemini && !is_opencode {
             if let Some(stdin) = child.stdin.as_mut() {
                 use std::io::Write;
                 stdin.write_all(prompt.as_bytes()).context("write prompt")?;
@@ -177,6 +201,17 @@ impl CliAgentPlugin {
                         if is_verbose() {
                             eprintln!(
                                 "crucible: {} parsed JSON from Gemini envelope",
+                                self.command
+                            );
+                        }
+                        return Ok(parsed);
+                    }
+                }
+                if is_opencode {
+                    if let Some(parsed) = parse_opencode_event_stream(&stdout) {
+                        if is_verbose() {
+                            eprintln!(
+                                "crucible: {} parsed JSON from OpenCode event stream",
                                 self.command
                             );
                         }
@@ -275,6 +310,7 @@ fn reviewer_focus_for_agent(id: &str) -> &'static str {
         "claude-code" => "Correctness, security, and invariants",
         "codex" => "Architecture, maintainability, and API consistency",
         "gemini" => "Performance, scalability, and edge-cases",
+        "open-code" => "Baseline correctness, regressions, and test gaps",
         _ => "General code quality",
     }
 }
@@ -367,6 +403,47 @@ fn parse_gemini_envelope<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T>
             serde_json::from_value(response.clone()).ok()
         }
         _ => None,
+    }
+}
+
+fn parse_opencode_event_stream<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T> {
+    if let Ok(parsed) = serde_json::from_str::<T>(input) {
+        return Some(parsed);
+    }
+
+    let mut text_parts = Vec::new();
+    for line in input.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let value: serde_json::Value = serde_json::from_str(line).ok()?;
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("text") => {
+                if let Some(text) = value
+                    .get("part")
+                    .and_then(|part| part.get("text"))
+                    .and_then(|v| v.as_str())
+                {
+                    text_parts.push(text.to_string());
+                }
+            }
+            Some("response") => {
+                if let Some(response) = value.get("response") {
+                    if let Ok(parsed) = serde_json::from_value::<T>(response.clone()) {
+                        return Some(parsed);
+                    }
+                    if let Some(text) = response.as_str() {
+                        if let Some(parsed) = parse_jsonish_text(text) {
+                            return Some(parsed);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if text_parts.is_empty() {
+        None
+    } else {
+        parse_jsonish_text(&text_parts.join(""))
     }
 }
 
@@ -826,6 +903,26 @@ mod tests {
     fn inbound_preview_prefers_narrative() {
         let preview = preview_inbound(r#"{"narrative":"Agent found one issue","findings":[]}"#);
         assert_eq!(preview, "Agent found one issue");
+    }
+
+    #[test]
+    fn parse_opencode_event_stream_extracts_fenced_json_findings() {
+        let input = concat!(
+            "{\"type\":\"step_start\",\"part\":{\"type\":\"step-start\"}}\n",
+            "{\"type\":\"text\",\"part\":{\"text\":\"```json\\n{\\\"narrative\\\":\\\"done\\\",\\\"findings\\\":[]}\\n```\"}}\n",
+            "{\"type\":\"step_finish\",\"part\":{\"type\":\"step-finish\",\"reason\":\"stop\"}}\n"
+        );
+        let parsed = parse_opencode_event_stream::<FindingsResponse>(input).expect("findings");
+        assert_eq!(parsed.narrative.as_deref(), Some("done"));
+        assert!(parsed.findings.is_empty());
+    }
+
+    #[test]
+    fn open_code_role_focus_is_specialized() {
+        assert_eq!(
+            reviewer_focus_for_agent("open-code"),
+            "Baseline correctness, regressions, and test gaps"
+        );
     }
 
     #[test]

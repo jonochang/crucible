@@ -166,7 +166,7 @@ role_weight = 1.0
 
 ### CLI Agent Contract
 
-Each agent is invoked with a prompt on stdin. The response **must** be valid JSON on stdout:
+Generic CLI agents are invoked with a prompt on stdin and must return valid JSON on stdout. Built-in adapters also add tool-specific non-interactive flags for `claude`, `gemini`, and `opencode` so the default configs work without extra args. The response **must** still be valid JSON on stdout:
 
 ```json
 {
