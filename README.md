@@ -218,6 +218,7 @@ Behavior:
 - `--hook` sets the exit code based on the verdict (see Exit Codes).
 - `--verbose` streams agent stdout/stderr to help debug CLI integrations.
 - `--debug` writes deep debug traces (prompts, raw agent I/O) to `.crucible/runs/<run_id>/debug.log`.
+- Reviewer/analyzer failures are recorded in the final report; they no longer abort the run by themselves.
 - `--reviewer <id>` constrains review/analyzer/judge to one reviewer.
 - `--max-rounds <n>` overrides configured review rounds.
 - `--export-issues <path>` writes a deduplicated issue list with file/line locations and reviewers (`.json` or `.md`).
@@ -225,6 +226,8 @@ Behavior:
 - `--github-dry-run` renders the GitHub review overview + inline comments without posting them. Requires a PR target.
 - `--publish-github` posts the structured review draft to GitHub using `gh api`. Requires a PR target.
 - Progress is still appended to `review_report.log` in the current directory for compatibility, and each run also writes scoped artifacts under `.crucible/runs/<run_id>/`.
+- `review_report.log` / `.crucible/runs/<run_id>/progress.log` are human-readable progress streams with timestamps, phase changes, and final report sections.
+- `.crucible/runs/<run_id>/debug.log` is for raw diagnostics: prompts, raw agent stdout/stderr, and parser/debug traces.
 - During review, Crucible streams startup header, startup sub-phases (references/history/docs/prechecks), analysis/system context, round status (with durations), convergence, and `[agent-review]` summaries.
 - Final report output includes an `Action Plan`, a `PR Comment Artifact`, and a structured `pr_review_draft` for GitHub publication.
 

@@ -2,15 +2,12 @@ use libcrucible::progress::{
     ConvergenceVerdict, ProgressEvent, ReviewerState, StartupPhase, StartupPhaseStatus,
 };
 use libcrucible::report::ReviewReport;
+use chrono::Local;
 use std::io::Write;
 
-/// Returns a timestamp string with zero-padded milliseconds (e.g. "1709734200.005").
+/// Returns a human-readable local timestamp with milliseconds.
 pub fn log_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => format!("{}.{:03}", d.as_secs(), d.subsec_millis()),
-        Err(_) => "0.000".to_string(),
-    }
+    Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z").to_string()
 }
 
 /// Serialize a `ReviewReport` to pretty JSON, with a manual fallback if `serde`
@@ -38,6 +35,7 @@ pub fn render_report_json(report: &ReviewReport) -> String {
                 "run_id": report.run_id,
                 "verdict": report.verdict,
                 "findings": report.findings,
+                "agent_failures": report.agent_failures,
                 "issues": report.issues,
                 "analysis_markdown": report.analysis_markdown,
                 "system_context_markdown": report.system_context_markdown,
@@ -290,13 +288,17 @@ mod tests {
     #[test]
     fn log_timestamp_has_three_digit_millis() {
         let ts = log_timestamp();
-        // Timestamp should be "seconds.millis" where millis is zero-padded to 3 digits
-        let parts: Vec<&str> = ts.split('.').collect();
-        assert_eq!(parts.len(), 2);
-        assert_eq!(
-            parts[1].len(),
-            3,
-            "millis should be zero-padded to 3 digits"
+        assert!(
+            ts.contains('-') && ts.contains(':') && ts.contains('.'),
+            "timestamp should be human-readable: {ts}"
+        );
+        assert!(
+            ts.ends_with("+00:00")
+                || ts.ends_with("+10:00")
+                || ts.ends_with("+11:00")
+                || ts.contains(" +")
+                || ts.contains(" -"),
+            "timestamp should include a numeric offset: {ts}"
         );
     }
 }

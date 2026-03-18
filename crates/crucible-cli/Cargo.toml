@@ -21,6 +21,7 @@ tempfile.workspace = true
 which.workspace = true
 git2.workspace = true
 uuid.workspace = true
+chrono.workspace = true
 
 libcrucible = { path = "../libcrucible" }
 

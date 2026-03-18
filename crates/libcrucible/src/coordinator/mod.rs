@@ -4,8 +4,8 @@ use crate::context::ReviewContext;
 use crate::plugin::{AgentReviewOutput, PluginRegistry};
 use crate::progress::{ConvergenceVerdict, ProgressEvent, ReviewerState, ReviewerStatus};
 use crate::report::{
-    CanonicalIssue, ConsensusMap, ConsensusStatus, EvidenceAnchor, FinalActionPlan, Finding,
-    FindingKey, LineSpan, RawFinding, Severity,
+    AgentFailure, CanonicalIssue, ConsensusMap, ConsensusStatus, EvidenceAnchor,
+    FinalActionPlan, Finding, FindingKey, LineSpan, RawFinding, Severity,
 };
 use anyhow::{Result, anyhow};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -61,6 +61,7 @@ impl Coordinator {
         self.emit(ProgressEvent::AnalyzerStart);
         let analyzer_ctx = ctx.into_agent_ctx(None);
         let mut focus = None;
+        let mut agent_failures = Vec::new();
         let analyzer_attempts: u8 = 2;
         for attempt in 1..=analyzer_attempts {
             match self.registry.analyzer.analyze_focus(&analyzer_ctx).await {
@@ -78,7 +79,13 @@ impl Coordinator {
                         ),
                     });
                     if attempt == analyzer_attempts {
-                        return Err(err);
+                        agent_failures.push(AgentFailure {
+                            agent: self.cfg.plugins.analyzer.clone(),
+                            stage: "analyzer".to_string(),
+                            round: None,
+                            message: err.to_string(),
+                        });
+                        focus = Some(fallback_focus(ctx, &err.to_string()));
                     }
                 }
             }
@@ -185,7 +192,13 @@ impl Coordinator {
                             id: id.clone(),
                             message: err.to_string(),
                         });
-                        return Err(err);
+                        agent_failures.push(AgentFailure {
+                            agent: id,
+                            stage: "review".to_string(),
+                            round: Some(round),
+                            message: err.to_string(),
+                        });
+                        continue;
                     }
                 };
                 self.consensus
@@ -317,10 +330,12 @@ impl Coordinator {
             self.emit(ProgressEvent::AutoFixReady);
         }
 
-        let final_analysis = render_final_analysis_markdown(&issues, &action_plan);
+        let final_analysis =
+            render_final_analysis_markdown(&issues, &action_plan, &agent_failures);
         let report = crate::report::ReviewReport::from_findings(
             self.run_id,
             &findings,
+            agent_failures,
             issues,
             Some(render_analysis_markdown(&focus)),
             Some(render_system_context_markdown(ctx)),
@@ -471,6 +486,7 @@ fn render_system_context_markdown(ctx: &ReviewContext) -> String {
 fn render_final_analysis_markdown(
     issues: &[CanonicalIssue],
     action_plan: &FinalActionPlan,
+    agent_failures: &[AgentFailure],
 ) -> String {
     let mut out = String::from("## Final Analysis\n\n");
     let critical = issues
@@ -492,6 +508,20 @@ fn render_final_analysis_markdown(
         warning,
         info
     ));
+    out.push_str(&format!("- Agent failures: {}\n", agent_failures.len()));
+    if !agent_failures.is_empty() {
+        out.push_str("\n### Agent Execution Issues\n");
+        for failure in agent_failures {
+            let round = failure
+                .round
+                .map(|value| format!(" round {}", value))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "- {} [{}{}]: {}\n",
+                failure.agent, failure.stage, round, failure.message
+            ));
+        }
+    }
     out.push_str("\n### Top Issues\n");
     if issues.is_empty() {
         out.push_str("- No issues found.\n");
@@ -517,6 +547,38 @@ fn render_final_analysis_markdown(
         }
     }
     out
+}
+
+fn fallback_focus(ctx: &ReviewContext, reason: &str) -> FocusAreas {
+    let mut focus_items = Vec::new();
+    for file in ctx.changed_files.iter().take(5) {
+        focus_items.push(crate::analysis::FocusItem {
+            area: file.display().to_string(),
+            rationale: "Changed file included via analyzer fallback.".to_string(),
+        });
+    }
+    let mut reviewer_checklist = Vec::new();
+    if !ctx.gathered.prechecks.is_empty() {
+        reviewer_checklist.push("Validate deterministic precheck failures or warnings.".to_string());
+    }
+    reviewer_checklist.push("Review changed files for correctness, regressions, and missing tests.".to_string());
+    FocusAreas {
+        summary: format!(
+            "Analyzer fallback in use because the analyzer failed: {}",
+            reason
+        ),
+        focus_items,
+        trade_offs: vec!["Analyzer-generated prioritization was unavailable for this run.".to_string()],
+        affected_modules: ctx
+            .changed_files
+            .iter()
+            .take(10)
+            .map(|path| path.display().to_string())
+            .collect(),
+        call_chain: Vec::new(),
+        design_patterns: Vec::new(),
+        reviewer_checklist,
+    }
 }
 
 fn format_round_synthesis(round: u8, findings: &HashMap<String, Vec<RawFinding>>) -> String {

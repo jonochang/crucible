@@ -46,6 +46,54 @@ Feature: Crucible CLI
     Then the full report artifact is written
     And run-scoped artifacts are written
 
+  Scenario: Review skips clean local target
+    Given a clean git repo
+    And a mock crucible config
+    When I run review with local target
+    Then the review reports no changes and exits successfully
+
+  Scenario: Review rejects conflicting target modes
+    Given a git repo with a diff
+    And a mock crucible config
+    When I run review with conflicting target modes
+    Then the review fails because target modes conflict
+
+  Scenario: Review rejects GitHub actions without a PR target
+    Given a git repo with a diff
+    And a mock crucible config
+    When I run review with GitHub dry-run on local target
+    Then the review fails because GitHub review requires a PR target
+
+  Scenario: Review rejects conflicting GitHub actions
+    Given a git repo with a diff
+    And a mock crucible config
+    When I run review with conflicting GitHub actions for PR
+    Then the review fails because GitHub actions conflict
+
+  Scenario: Review errors when repo target has no diff
+    Given a clean git repo with remote main configured
+    And a mock crucible config
+    When I run review with repo target
+    Then the review fails because repo target has no diff
+
+  Scenario: Review errors when branch target has no diff
+    Given a clean git repo with remote main configured
+    And a mock crucible config
+    When I run review with branch target main
+    Then the review fails because branch target has no diff
+
+  Scenario: Review errors when requested files have no diff
+    Given a clean git repo
+    And a mock crucible config
+    When I run review with file target README.md
+    Then the review fails because requested files have no diff
+
+  Scenario: Review captures related references in the agent prompt
+    Given a git repo with symbol references in nearby files
+    And a prompt-capturing mock crucible config
+    When I run review
+    Then the captured prompt includes related reference snippets
+
   Scenario: Review generates a GitHub dry-run review
     Given a git repo with a diff
     And a mock crucible config
@@ -60,6 +108,29 @@ Feature: Crucible CLI
     And a mock GitHub CLI
     When I run PR review and publish GitHub review
     Then the GitHub review payload is posted
+
+  Scenario: Review maps deleted source ranges to GitHub left-side comments
+    Given a git repo with a deleted source range diff
+    And a deleted-range mock crucible config
+    And a mock GitHub CLI
+    When I run PR review with GitHub dry-run
+    Then the report maps deleted ranges to left-side inline comments
+
+  Scenario: Review continues when an agent returns malformed JSON
+    Given a git repo with a diff
+    And a malformed mock crucible config
+    When I run review
+    Then the review process completes successfully
+    And the review verdict is warn
+    And the final report includes the malformed agent failure
+
+  Scenario: Review continues when an agent exits non-zero
+    Given a git repo with a diff
+    And a failing mock crucible config
+    When I run review
+    Then the review process completes successfully
+    And the review verdict is warn
+    And the final report includes the failed agent process
 
   Scenario: Review exits on Ctrl+C
     Given a git repo with a diff

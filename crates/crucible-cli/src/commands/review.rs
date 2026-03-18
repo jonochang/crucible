@@ -786,6 +786,20 @@ fn print_report(report: &ReviewReport, issues: &[IssueRow]) {
         );
     }
 
+    if !report.agent_failures.is_empty() {
+        println!("\nAgent Execution Issues:");
+        for failure in &report.agent_failures {
+            let round = failure
+                .round
+                .map(|value| format!(" round {}", value))
+                .unwrap_or_default();
+            println!(
+                "  - {} [{}{}] {}",
+                failure.agent, failure.stage, round, failure.message
+            );
+        }
+    }
+
     if let Some(final_analysis) = &report.final_analysis_markdown {
         println!("\nFinal Analysis:\n{}", final_analysis);
     }
@@ -1348,6 +1362,7 @@ mod tests {
         let report = ReviewReport::from_findings(
             uuid::Uuid::nil(),
             &findings,
+            Vec::new(),
             Vec::new(),
             None,
             None,

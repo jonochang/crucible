@@ -456,6 +456,21 @@ fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) 
             )]));
         }
 
+        if !report.agent_failures.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from("Agent Execution Issues:"));
+            for failure in &report.agent_failures {
+                let round = failure
+                    .round
+                    .map(|value| format!(" round {}", value))
+                    .unwrap_or_default();
+                lines.push(Line::from(format!(
+                    "- {} [{}{}] {}",
+                    failure.agent, failure.stage, round, failure.message
+                )));
+            }
+        }
+
         if report.auto_fix.is_some() {
             lines.push(Line::from(""));
             lines.push(Line::from("Auto-fix ready."));

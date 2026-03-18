@@ -18,7 +18,12 @@ crucible review [PR] [--local] [--repo] [--branch [base]] [--files <paths...>] [
 - `--json` emits the serialized report.
 - `--hook` makes the exit code suitable for git hooks.
 - `--debug` writes prompts and raw agent I/O under `.crucible/runs/<run_id>/debug.log`.
+- Reviewer/analyzer failures are captured in the report and surfaced in progress output instead of aborting the review.
 
 ## Artifacts
 
-Each run writes scoped output under `.crucible/runs/<run_id>/`, including progress logs and the final report.
+Each run writes scoped output under `.crucible/runs/<run_id>/`, including:
+
+- `progress.log`: human-readable progress stream with timestamps, phase transitions, and final report sections.
+- `report.json`: the full serialized review report.
+- `debug.log`: raw prompts, raw agent stdout/stderr, and parser/debug traces when `--debug` is enabled.

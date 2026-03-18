@@ -9,6 +9,8 @@ pub struct ReviewReport {
     pub verdict: Verdict,
     pub findings: Vec<Finding>,
     #[serde(default)]
+    pub agent_failures: Vec<AgentFailure>,
+    #[serde(default)]
     pub issues: Vec<CanonicalIssue>,
     #[serde(default)]
     pub analysis_markdown: Option<String>,
@@ -31,6 +33,7 @@ impl ReviewReport {
     pub fn from_findings(
         run_id: Uuid,
         findings: &[Finding],
+        agent_failures: Vec<AgentFailure>,
         issues: Vec<CanonicalIssue>,
         analysis_markdown: Option<String>,
         system_context_markdown: Option<String>,
@@ -42,11 +45,12 @@ impl ReviewReport {
         pr_comment_markdown: Option<String>,
         pr_review_draft: Option<PullRequestReviewDraft>,
     ) -> Self {
-        let verdict = Verdict::from_findings(findings, cfg);
+        let verdict = Verdict::from_findings(findings, &agent_failures, cfg);
         Self {
             run_id,
             verdict,
             findings: findings.to_vec(),
+            agent_failures,
             issues,
             analysis_markdown,
             system_context_markdown,
@@ -69,7 +73,11 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    pub fn from_findings(findings: &[Finding], cfg: &crate::config::VerdictConfig) -> Self {
+    pub fn from_findings(
+        findings: &[Finding],
+        agent_failures: &[AgentFailure],
+        cfg: &crate::config::VerdictConfig,
+    ) -> Self {
         let block_on = cfg.block_on.as_str();
         let has_critical = findings.iter().any(|f| f.severity == Severity::Critical);
         let has_warning = findings.iter().any(|f| f.severity == Severity::Warning);
@@ -78,6 +86,8 @@ impl Verdict {
             "Warning" if has_critical || has_warning => Verdict::Block,
             _ => {
                 if has_critical || has_warning {
+                    Verdict::Warn
+                } else if !agent_failures.is_empty() {
                     Verdict::Warn
                 } else {
                     Verdict::Pass
@@ -107,6 +117,15 @@ pub struct Finding {
     pub evidence: Vec<EvidenceAnchor>,
     pub round: u8,
     pub raised_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentFailure {
+    pub agent: String,
+    pub stage: String,
+    #[serde(default)]
+    pub round: Option<u8>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

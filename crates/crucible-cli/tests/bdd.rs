@@ -15,6 +15,7 @@ struct CliWorld {
     export_path: Option<PathBuf>,
     report_path: Option<PathBuf>,
     github_payload_path: Option<PathBuf>,
+    prompt_capture_path: Option<PathBuf>,
     interrupt_status: Option<i32>,
     interrupt_stderr: Option<String>,
 }
@@ -60,6 +61,81 @@ fn init_git_repo(world: &mut CliWorld) {
     world.repo_dir = Some(repo_dir.to_path_buf());
 }
 
+fn init_clean_git_repo(world: &mut CliWorld) {
+    let temp_dir = world
+        .temp_dir
+        .get_or_insert_with(|| TempDir::new().expect("temp dir"));
+    let repo_dir = temp_dir.path();
+    let repo = Repository::init(repo_dir).expect("init repo");
+    repo.config()
+        .and_then(|mut cfg| cfg.set_str("user.email", "bdd@example.com"))
+        .expect("set git email");
+    repo.config()
+        .and_then(|mut cfg| cfg.set_str("user.name", "BDD Runner"))
+        .expect("set git name");
+    let readme = repo_dir.join("README.md");
+    std::fs::write(&readme, "Hello\n").expect("write README");
+    commit_all(&repo, "init");
+    world.repo_dir = Some(repo_dir.to_path_buf());
+}
+
+fn init_git_repo_with_symbol_references(world: &mut CliWorld) {
+    let temp_dir = world
+        .temp_dir
+        .get_or_insert_with(|| TempDir::new().expect("temp dir"));
+    let repo_dir = temp_dir.path();
+    let repo = Repository::init(repo_dir).expect("init repo");
+    repo.config()
+        .and_then(|mut cfg| cfg.set_str("user.email", "bdd@example.com"))
+        .expect("set git email");
+    repo.config()
+        .and_then(|mut cfg| cfg.set_str("user.name", "BDD Runner"))
+        .expect("set git name");
+
+    let src_dir = repo_dir.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    std::fs::write(
+        src_dir.join("widget.rs"),
+        "pub struct Widget;\n\npub fn build_widget() -> Widget {\n    Widget\n}\n",
+    )
+    .expect("write widget");
+    std::fs::write(
+        src_dir.join("consumer.rs"),
+        "use crate::widget::Widget;\n\npub fn consume(widget: Widget) -> Widget {\n    widget\n}\n",
+    )
+    .expect("write consumer");
+    commit_all(&repo, "init");
+
+    std::fs::write(
+        src_dir.join("widget.rs"),
+        "pub struct Widget {\n    pub value: i32,\n}\n\npub fn build_widget() -> Widget {\n    Widget { value: 1 }\n}\n",
+    )
+    .expect("update widget");
+    world.repo_dir = Some(repo_dir.to_path_buf());
+}
+
+fn init_git_repo_with_deleted_source_diff(world: &mut CliWorld) {
+    let temp_dir = world
+        .temp_dir
+        .get_or_insert_with(|| TempDir::new().expect("temp dir"));
+    let repo_dir = temp_dir.path();
+    let repo = Repository::init(repo_dir).expect("init repo");
+    repo.config()
+        .and_then(|mut cfg| cfg.set_str("user.email", "bdd@example.com"))
+        .expect("set git email");
+    repo.config()
+        .and_then(|mut cfg| cfg.set_str("user.name", "BDD Runner"))
+        .expect("set git name");
+
+    let src_dir = repo_dir.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    std::fs::write(src_dir.join("lib.rs"), "old_one\nold_two\nkept\n").expect("write lib");
+    commit_all(&repo, "init");
+
+    std::fs::write(src_dir.join("lib.rs"), "kept\n").expect("update lib");
+    world.repo_dir = Some(repo_dir.to_path_buf());
+}
+
 fn commit_all(repo: &Repository, message: &str) {
     let mut index = repo.index().expect("index");
     index
@@ -91,20 +167,85 @@ fn commit_all(repo: &Repository, message: &str) {
     .expect("commit");
 }
 
+fn configure_main_branch_and_origin_head(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let repo = Repository::open(repo_dir).expect("open repo");
+    let head_commit = repo
+        .head()
+        .expect("head")
+        .peel_to_commit()
+        .expect("head commit");
+    if repo.find_reference("refs/heads/main").is_err() {
+        repo.reference(
+            "refs/heads/main",
+            head_commit.id(),
+            true,
+            "create main branch",
+        )
+        .expect("create main branch ref");
+    }
+    repo.reference(
+        "refs/remotes/origin/main",
+        head_commit.id(),
+        true,
+        "create origin main ref",
+    )
+    .expect("create origin main ref");
+    repo.reference_symbolic(
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+        true,
+        "create origin HEAD ref",
+    )
+    .expect("create origin HEAD symbolic ref");
+}
+
 fn write_mock_agent_config(world: &mut CliWorld, sleep_secs: Option<u64>) {
+    write_mock_agent_config_custom(
+        world,
+        sleep_secs,
+        None,
+        "README.md",
+        1,
+        1,
+        "Mock finding",
+    );
+}
+
+fn write_mock_agent_config_custom(
+    world: &mut CliWorld,
+    sleep_secs: Option<u64>,
+    capture_path: Option<&Path>,
+    finding_file: &str,
+    line_start: u32,
+    line_end: u32,
+    message: &str,
+) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
     let mock_path = repo_dir.join("mock-agent.sh");
     let sleep_line = sleep_secs
         .map(|s| format!("sleep {s}\n"))
         .unwrap_or_default();
+    let capture_line = capture_path
+        .map(|path| {
+            format!(
+                "printf '\\n---PROMPT---\\n' >> \"{path}\"\ncat >> \"{path}\"\n",
+                path = path.display()
+            )
+        })
+        .unwrap_or_else(|| "cat >/dev/null\n".to_string());
     let script = format!(
         r#"#!/usr/bin/env sh
-cat >/dev/null
-{sleep}cat <<'JSON'
-{{"summary":"Mock summary","focus_items":[{{"area":"Mock","rationale":"Mock rationale"}}],"trade_offs":["none"],"findings":[{{"severity":"Info","file":"README.md","line_start":1,"line_end":1,"message":"Mock finding","confidence":"Low"}}],"unified_diff":"","explanation":""}}
+{capture}{sleep}cat <<'JSON'
+{{"summary":"Mock summary","focus_items":[{{"area":"Mock","rationale":"Mock rationale"}}],"trade_offs":["none"],"findings":[{{"severity":"Info","file":"{file}","line_start":{line_start},"line_end":{line_end},"message":"{message}","confidence":"Low"}}],"unified_diff":"","explanation":""}}
 JSON
 "#,
-        sleep = sleep_line
+        capture = capture_line,
+        sleep = sleep_line,
+        file = finding_file,
+        line_start = line_start,
+        line_end = line_end,
+        message = message
     );
     std::fs::write(&mock_path, script).expect("write mock agent");
     let mut perms = std::fs::metadata(&mock_path)
@@ -180,6 +321,74 @@ role_weight = 1.0
         mock = mock_path.display()
     );
     std::fs::write(repo_dir.join(".crucible.toml"), config).expect("write config");
+}
+
+fn write_prompt_capturing_mock_agent_config(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let capture_path = repo_dir.join("captured-prompts.txt");
+    write_mock_agent_config_custom(
+        world,
+        None,
+        Some(&capture_path),
+        "src/widget.rs",
+        1,
+        2,
+        "Mock finding",
+    );
+    world.prompt_capture_path = Some(capture_path);
+}
+
+fn write_deleted_range_mock_agent_config(world: &mut CliWorld) {
+    write_mock_agent_config_custom(
+        world,
+        None,
+        None,
+        "src/lib.rs",
+        1,
+        2,
+        "Deleted range finding",
+    );
+}
+
+fn write_invalid_json_mock_agent_config(world: &mut CliWorld) {
+    write_mock_agent_config(world, None);
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let mock_path = repo_dir.join("mock-agent.sh");
+    let script = r#"#!/usr/bin/env sh
+cat >/dev/null
+printf 'not-json\n'
+"#;
+    std::fs::write(&mock_path, script).expect("write malformed mock agent");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&mock_path)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&mock_path, perms).expect("set permissions");
+    }
+}
+
+fn write_failing_mock_agent_config(world: &mut CliWorld) {
+    write_mock_agent_config(world, None);
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let mock_path = repo_dir.join("mock-agent.sh");
+    let script = r#"#!/usr/bin/env sh
+cat >/dev/null
+echo 'simulated failure' >&2
+exit 7
+"#;
+    std::fs::write(&mock_path, script).expect("write failing mock agent");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&mock_path)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&mock_path, perms).expect("set permissions");
+    }
 }
 
 fn write_real_agent_config(world: &mut CliWorld) {
@@ -264,15 +473,7 @@ case "$cmd" in
         exit 0
         ;;
       diff)
-        cat <<'DIFF'
-diff --git a/README.md b/README.md
-index e965047..f9264f7 100644
---- a/README.md
-+++ b/README.md
-@@ -1 +1,2 @@
- Hello
-+World
-DIFF
+        git diff --no-ext-diff
         ;;
       view)
         cat <<'JSON'
@@ -373,6 +574,27 @@ fn git_repo_with_diff(world: &mut CliWorld) {
     init_git_repo(world);
 }
 
+#[given("a clean git repo")]
+fn clean_git_repo(world: &mut CliWorld) {
+    init_clean_git_repo(world);
+}
+
+#[given("a clean git repo with remote main configured")]
+fn clean_git_repo_with_remote_main(world: &mut CliWorld) {
+    init_clean_git_repo(world);
+    configure_main_branch_and_origin_head(world);
+}
+
+#[given("a git repo with symbol references in nearby files")]
+fn git_repo_with_symbol_references(world: &mut CliWorld) {
+    init_git_repo_with_symbol_references(world);
+}
+
+#[given("a git repo with a deleted source range diff")]
+fn git_repo_with_deleted_source_range(world: &mut CliWorld) {
+    init_git_repo_with_deleted_source_diff(world);
+}
+
 #[given("a mock crucible config")]
 fn mock_crucible_config(world: &mut CliWorld) {
     write_mock_agent_config(world, None);
@@ -383,9 +605,29 @@ fn slow_mock_crucible_config(world: &mut CliWorld) {
     write_mock_agent_config(world, Some(2));
 }
 
+#[given("a prompt-capturing mock crucible config")]
+fn prompt_capturing_mock_crucible_config(world: &mut CliWorld) {
+    write_prompt_capturing_mock_agent_config(world);
+}
+
+#[given("a deleted-range mock crucible config")]
+fn deleted_range_mock_crucible_config(world: &mut CliWorld) {
+    write_deleted_range_mock_agent_config(world);
+}
+
 #[given("a real agent crucible config")]
 fn real_agent_config(world: &mut CliWorld) {
     write_real_agent_config(world);
+}
+
+#[given("a malformed mock crucible config")]
+fn malformed_mock_crucible_config(world: &mut CliWorld) {
+    write_invalid_json_mock_agent_config(world);
+}
+
+#[given("a failing mock crucible config")]
+fn failing_mock_crucible_config(world: &mut CliWorld) {
+    write_failing_mock_agent_config(world);
 }
 
 #[given("a mock GitHub CLI")]
@@ -398,6 +640,60 @@ fn run_review(world: &mut CliWorld) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
     let output = run_cmd(&["review"], Some(repo_dir));
     world.output = Some(output);
+}
+
+#[when("I run review with local target")]
+fn run_review_with_local_target(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    world.output = Some(run_cmd(&["review", "--local"], Some(repo_dir)));
+}
+
+#[when("I run review with repo target")]
+fn run_review_with_repo_target(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    world.output = Some(run_cmd(&["review", "--repo"], Some(repo_dir)));
+}
+
+#[when("I run review with branch target main")]
+fn run_review_with_branch_target_main(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    world.output = Some(run_cmd(&["review", "--branch", "main"], Some(repo_dir)));
+}
+
+#[when("I run review with file target README.md")]
+fn run_review_with_file_target(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    world.output = Some(run_cmd(
+        &["review", "--files", "README.md"],
+        Some(repo_dir),
+    ));
+}
+
+#[when("I run review with conflicting target modes")]
+fn run_review_with_conflicting_target_modes(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    world.output = Some(run_cmd(
+        &["review", "--local", "--repo"],
+        Some(repo_dir),
+    ));
+}
+
+#[when("I run review with conflicting GitHub actions for PR")]
+fn run_review_with_conflicting_github_actions(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    world.output = Some(run_cmd(
+        &["review", "123", "--github-dry-run", "--publish-github"],
+        Some(repo_dir),
+    ));
+}
+
+#[when("I run review with GitHub dry-run on local target")]
+fn run_review_with_github_dry_run_on_local_target(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    world.output = Some(run_cmd(
+        &["review", "--local", "--github-dry-run"],
+        Some(repo_dir),
+    ));
 }
 
 #[when("I run review with issue export")]
@@ -530,6 +826,14 @@ fn review_verdict_pass(world: &mut CliWorld) {
     assert!(output.status.success(), "command failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Verdict: PASS"));
+}
+
+#[then("the review verdict is warn")]
+fn review_verdict_warn(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Verdict: WARN"));
 }
 
 #[then("the review findings include the mock finding")]
@@ -688,6 +992,44 @@ fn report_includes_structured_pr_review_draft(world: &mut CliWorld) {
     assert!(!inline.is_empty(), "inline comments should not be empty");
 }
 
+#[then("the captured prompt includes related reference snippets")]
+fn captured_prompt_includes_related_reference_snippets(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let capture_path = world
+        .prompt_capture_path
+        .as_ref()
+        .expect("prompt capture path available");
+    let raw = std::fs::read_to_string(capture_path).expect("read captured prompts");
+    assert!(raw.contains("Relevant references:"), "references section missing");
+    assert!(raw.contains("src/consumer.rs"), "cross-file reference missing");
+    assert!(raw.contains("Widget"), "symbol reference missing");
+}
+
+#[then("the report maps deleted ranges to left-side inline comments")]
+fn report_maps_deleted_ranges_to_left_side_inline_comments(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let report_path = world.report_path.as_ref().expect("report path");
+    let raw = std::fs::read_to_string(report_path).expect("read report export");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("parse report export json");
+    let draft = json
+        .get("pr_review_draft")
+        .expect("pr_review_draft missing from report");
+    let inline = draft
+        .get("inline_comments")
+        .and_then(|v| v.as_array())
+        .expect("inline comments array");
+    let comment = inline
+        .iter()
+        .find(|comment| comment.get("path").and_then(|v| v.as_str()) == Some("src/lib.rs"))
+        .expect("src/lib.rs inline comment");
+    assert_eq!(comment.get("side").and_then(|v| v.as_str()), Some("Left"));
+    assert_eq!(comment.get("line").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(comment.get("start_line").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(comment.get("start_side").and_then(|v| v.as_str()), Some("Left"));
+}
+
 #[then("the GitHub review payload is posted")]
 fn github_review_payload_posted(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("output available");
@@ -732,6 +1074,78 @@ fn review_output_is_valid(world: &mut CliWorld) {
     assert!(output.status.success(), "command failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Crucible Review"));
+}
+
+#[then("the review reports no changes and exits successfully")]
+fn review_reports_no_changes_and_exits_successfully(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No branch/local code changes detected; skipping review."));
+}
+
+fn assert_review_failure_contains(world: &CliWorld, needle: &str) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(needle),
+        "stderr did not contain {:?}\nactual stderr:\n{}",
+        needle,
+        stderr
+    );
+}
+
+#[then("the review fails because target modes conflict")]
+fn review_fails_because_target_modes_conflict(world: &mut CliWorld) {
+    assert_review_failure_contains(world, "choose only one target mode");
+}
+
+#[then("the review fails because GitHub review requires a PR target")]
+fn review_fails_because_github_review_requires_pr(world: &mut CliWorld) {
+    assert_review_failure_contains(world, "GitHub review actions require a PR target");
+}
+
+#[then("the review fails because GitHub actions conflict")]
+fn review_fails_because_github_actions_conflict(world: &mut CliWorld) {
+    assert_review_failure_contains(world, "choose only one GitHub action");
+}
+
+#[then("the review fails because repo target has no diff")]
+fn review_fails_because_repo_target_has_no_diff(world: &mut CliWorld) {
+    assert_review_failure_contains(world, "no repo diff found for range refs/remotes/origin/main...HEAD");
+}
+
+#[then("the review fails because branch target has no diff")]
+fn review_fails_because_branch_target_has_no_diff(world: &mut CliWorld) {
+    assert_review_failure_contains(world, "no branch diff found for range main...HEAD");
+}
+
+#[then("the review fails because requested files have no diff")]
+fn review_fails_because_requested_files_have_no_diff(world: &mut CliWorld) {
+    assert_review_failure_contains(world, "no diff found for requested files");
+}
+
+#[then("the final report includes the malformed agent failure")]
+fn final_report_includes_malformed_agent_failure(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("Agent Execution Issues:"));
+    assert!(stdout.contains("parse JSON from CLI failed"));
+    assert!(stderr.contains("[progress] agent:error"));
+}
+
+#[then("the final report includes the failed agent process")]
+fn final_report_includes_failed_agent_process(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("Agent Execution Issues:"));
+    assert!(stdout.contains("simulated failure"));
+    assert!(stderr.contains("[progress] agent:error"));
 }
 
 fn main() {
