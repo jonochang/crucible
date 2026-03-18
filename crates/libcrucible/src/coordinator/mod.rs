@@ -8,8 +8,9 @@ use crate::report::{
     FinalActionPlan, Finding, FindingKey, LineSpan, RawFinding, Severity,
 };
 use anyhow::{Result, anyhow};
+use futures::future::{BoxFuture, FutureExt};
 use futures::stream::{FuturesUnordered, StreamExt};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -29,8 +30,7 @@ impl Coordinator {
         progress: Option<tokio::sync::mpsc::UnboundedSender<crate::progress::ProgressEvent>>,
         run_id: Uuid,
     ) -> Self {
-        let consensus =
-            ConsensusTracker::new(cfg.coordinator.quorum_threshold, cfg.plugins.agents.len());
+        let consensus = ConsensusTracker::new(cfg.coordinator.quorum_threshold, registry.agents.len());
         Self {
             registry,
             cfg,
@@ -113,14 +113,17 @@ impl Coordinator {
         let mut previous_count = 0usize;
         let mut previous_high_count = 0usize;
         let mut prior_round_findings: HashMap<String, Vec<RawFinding>> = HashMap::new();
+        let mut active_agents = self.registry.agents.clone();
+        let mut standby_agents = self.registry.standby_agents.clone();
+        self.emit(ProgressEvent::PhaseStart {
+            phase: "agent-preflight".to_string(),
+        });
+        self.emit(ProgressEvent::PhaseDone {
+            phase: "agent-preflight".to_string(),
+        });
         for round in 1..=total_rounds {
             self.snapshotter.freeze_round(round, &HashMap::new());
-            let agents = self
-                .registry
-                .agents
-                .iter()
-                .map(|a| a.id().to_string())
-                .collect();
+            let agents = active_agents.iter().map(|a| a.id().to_string()).collect();
             self.emit(ProgressEvent::PhaseStart {
                 phase: format!("round-{round}"),
             });
@@ -130,9 +133,7 @@ impl Coordinator {
                 agents,
             });
 
-            let mut statuses = self
-                .registry
-                .agents
+            let mut statuses = active_agents
                 .iter()
                 .map(|a| ReviewerStatus {
                     id: a.id().to_string(),
@@ -147,36 +148,22 @@ impl Coordinator {
             });
 
             let mut round_findings: HashMap<String, Vec<RawFinding>> = HashMap::new();
-            let mut pending = FuturesUnordered::new();
-            for agent in &self.registry.agents {
+            let mut pending: FuturesUnordered<BoxFuture<'static, (String, Result<AgentReviewOutput>)>> =
+                FuturesUnordered::new();
+            for agent in &active_agents {
                 let agent = agent.clone();
-                let id = agent.id().to_string();
-                update_status(&mut statuses, &id, ReviewerState::Running, None);
-                started_at.insert(id.clone(), Instant::now());
-                self.emit(ProgressEvent::ParallelStatus {
+                dispatch_agent_for_round(
+                    &mut pending,
+                    &mut statuses,
+                    &mut started_at,
                     round,
-                    statuses: statuses.clone(),
-                });
-                self.emit(ProgressEvent::AgentStart {
-                    round,
-                    id: id.clone(),
-                });
-                let agent_ctx = agent_ctx.clone();
-                let diff_chunks = diff_chunks.clone();
-                let prior_round_findings = prior_round_findings.clone();
-                let timeout_secs = self.cfg.coordinator.agent_timeout_secs;
-                pending.push(async move {
-                    let output = run_agent_for_round(
-                        agent.as_ref(),
-                        &agent_ctx,
-                        round,
-                        &diff_chunks,
-                        &prior_round_findings,
-                        timeout_secs,
-                    )
-                    .await;
-                    (id, output)
-                });
+                    agent,
+                    agent_ctx.clone(),
+                    diff_chunks.clone(),
+                    prior_round_findings.clone(),
+                    self.cfg.coordinator.agent_timeout_secs,
+                    self,
+                );
             }
             while let Some((id, output)) = pending.next().await {
                 let output = match output {
@@ -193,11 +180,41 @@ impl Coordinator {
                             message: err.to_string(),
                         });
                         agent_failures.push(AgentFailure {
-                            agent: id,
+                            agent: id.clone(),
                             stage: "review".to_string(),
                             round: Some(round),
                             message: err.to_string(),
                         });
+                        if let Some(replacement) =
+                            activate_standby_agent(&mut active_agents, &mut standby_agents, &id)
+                        {
+                            replace_status_id(&mut statuses, &id, replacement.id().to_string());
+                            let replacement_id = replacement.id().to_string();
+                            self.emit(ProgressEvent::ParallelStatus {
+                                round,
+                                statuses: statuses.clone(),
+                            });
+                            dispatch_agent_for_round(
+                                &mut pending,
+                                &mut statuses,
+                                &mut started_at,
+                                round,
+                                replacement,
+                                agent_ctx.clone(),
+                                diff_chunks.clone(),
+                                prior_round_findings.clone(),
+                                self.cfg.coordinator.agent_timeout_secs,
+                                self,
+                            );
+                            self.emit(ProgressEvent::AgentTranscript {
+                                id: replacement_id,
+                                direction: crate::progress::TranscriptDirection::FromAgent,
+                                message: format!(
+                                    "activated standby reviewer after {} failed",
+                                    id
+                                ),
+                            });
+                        }
                         continue;
                     }
                 };
@@ -396,6 +413,68 @@ fn update_status(
             break;
         }
     }
+}
+
+fn replace_status_id(statuses: &mut [ReviewerStatus], old_id: &str, new_id: String) {
+    for s in statuses.iter_mut() {
+        if s.id == old_id {
+            s.id = new_id;
+            s.state = ReviewerState::Queued;
+            s.duration_secs = None;
+            break;
+        }
+    }
+}
+
+fn activate_standby_agent(
+    active_agents: &mut [std::sync::Arc<dyn crate::plugin::AgentPlugin>],
+    standby_agents: &mut VecDeque<std::sync::Arc<dyn crate::plugin::AgentPlugin>>,
+    failed_id: &str,
+) -> Option<std::sync::Arc<dyn crate::plugin::AgentPlugin>> {
+    let replacement = standby_agents.pop_front()?;
+    let slot = active_agents.iter_mut().find(|agent| agent.id() == failed_id)?;
+    *slot = replacement.clone();
+    Some(replacement)
+}
+
+fn dispatch_agent_for_round(
+    pending: &mut FuturesUnordered<BoxFuture<'static, (String, Result<AgentReviewOutput>)>>,
+    statuses: &mut [ReviewerStatus],
+    started_at: &mut HashMap<String, Instant>,
+    round: u8,
+    agent: std::sync::Arc<dyn crate::plugin::AgentPlugin>,
+    agent_ctx: crate::analysis::AgentContext,
+    diff_chunks: Vec<String>,
+    prior_round_findings: HashMap<String, Vec<RawFinding>>,
+    timeout_secs: u64,
+    coordinator: &Coordinator,
+) {
+    let id = agent.id().to_string();
+    update_status(statuses, &id, ReviewerState::Running, None);
+    started_at.insert(id.clone(), Instant::now());
+    coordinator.emit(ProgressEvent::ParallelStatus {
+        round,
+        statuses: statuses.to_vec(),
+    });
+    coordinator.emit(ProgressEvent::AgentStart {
+        round,
+        id: id.clone(),
+    });
+    pending.push(
+        async move {
+            let output = run_agent_for_round(
+                agent.as_ref(),
+                &agent_ctx,
+                round,
+                &diff_chunks,
+                &prior_round_findings,
+                timeout_secs,
+            )
+            .await;
+            (id, output)
+        }
+        .boxed(),
+    );
 }
 
 fn count_changed_lines(diff: &str) -> usize {
@@ -696,9 +775,16 @@ pub fn parse_convergence_verdict(input: &str) -> Option<ConvergenceVerdict> {
 
 #[cfg(test)]
 mod tests {
-    use super::{calibrate_low_confidence, chunk_diff, parse_convergence_verdict};
+    use super::{
+        activate_standby_agent, calibrate_low_confidence, chunk_diff, parse_convergence_verdict,
+    };
+    use crate::analysis::AgentContext;
+    use crate::plugin::{AgentPlugin, AgentReviewOutput, ConvergenceDecision};
     use crate::progress::ConvergenceVerdict;
-    use crate::report::{Confidence, Finding, Severity};
+    use crate::report::{AutoFix, CanonicalIssue, Confidence, Finding, RawFinding, Severity};
+    use async_trait::async_trait;
+    use std::collections::VecDeque;
+    use std::sync::Arc;
 
     #[test]
     fn parse_convergence_token() {
@@ -757,6 +843,89 @@ mod tests {
         }];
         calibrate_low_confidence(&mut findings);
         assert_eq!(findings[0].severity, Severity::Info);
+    }
+
+    struct DummyAgent(&'static str);
+
+    #[async_trait]
+    impl AgentPlugin for DummyAgent {
+        fn id(&self) -> &str {
+            self.0
+        }
+
+        fn persona(&self) -> &str {
+            "dummy"
+        }
+
+        async fn analyze(&self, _ctx: &AgentContext) -> anyhow::Result<AgentReviewOutput> {
+            Ok(AgentReviewOutput {
+                findings: Vec::<RawFinding>::new(),
+                narrative: String::new(),
+            })
+        }
+
+        async fn debate(
+            &self,
+            _ctx: &AgentContext,
+            _round: u8,
+            _synthesis: &crate::coordinator::CrossPollinationSynthesis,
+        ) -> anyhow::Result<AgentReviewOutput> {
+            self.analyze(_ctx).await
+        }
+
+        async fn summarize(
+            &self,
+            _ctx: &AgentContext,
+            _findings: &[Finding],
+        ) -> anyhow::Result<AutoFix> {
+            Ok(AutoFix {
+                unified_diff: String::new(),
+                explanation: String::new(),
+            })
+        }
+
+        async fn judge_convergence(
+            &self,
+            _ctx: &AgentContext,
+            _round: u8,
+            _findings: &[Finding],
+        ) -> anyhow::Result<ConvergenceDecision> {
+            Ok(ConvergenceDecision {
+                verdict: ConvergenceVerdict::Converged,
+                rationale: String::new(),
+            })
+        }
+
+        async fn structurize_issues(
+            &self,
+            _ctx: &AgentContext,
+            _findings: &[Finding],
+        ) -> anyhow::Result<Vec<CanonicalIssue>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn standby_agent_replaces_failed_agent_slot() {
+        let mut active_agents: Vec<Arc<dyn AgentPlugin>> = vec![
+            Arc::new(DummyAgent("claude-code")),
+            Arc::new(DummyAgent("codex")),
+            Arc::new(DummyAgent("gemini")),
+        ];
+        let mut standby_agents: VecDeque<Arc<dyn AgentPlugin>> =
+            VecDeque::from([Arc::new(DummyAgent("open-code")) as Arc<dyn AgentPlugin>]);
+
+        let replacement =
+            activate_standby_agent(&mut active_agents, &mut standby_agents, "gemini")
+                .expect("replacement");
+
+        let ids = active_agents
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(replacement.id(), "open-code");
+        assert_eq!(ids, vec!["claude-code", "codex", "open-code"]);
+        assert!(standby_agents.is_empty());
     }
 }
 

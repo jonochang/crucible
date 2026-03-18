@@ -47,7 +47,7 @@ include_tests = true
 timeout_secs = 30
 
 [plugins]
-agents = ["claude-code", "codex", "gemini"]
+agents = ["claude-code", "codex", "gemini", "open-code"]
 judge = "claude-code"
 analyzer = "claude-code"
 paths = []
@@ -56,3 +56,5 @@ paths = []
 ## Plugin stanzas
 
 Each plugin can define a command, arguments, persona, and role weighting. Generic agent commands should accept prompt text on stdin and emit strict JSON on stdout. Built-in defaults also adapt `claude`, `gemini`, and `opencode` to their non-interactive JSON modes automatically.
+
+With the default reviewer pool, Crucible selects up to 3 installed agents in this order: `claude-code`, `codex`, `gemini`, `open-code`. Any remaining available agent stays on standby and can replace a reviewer that errors during review.

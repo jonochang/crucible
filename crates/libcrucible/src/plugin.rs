@@ -5,7 +5,9 @@ use crate::progress::ConvergenceVerdict;
 use crate::report::{AutoFix, CanonicalIssue, Finding, RawFinding};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use std::collections::VecDeque;
 use std::sync::Arc;
+use which::which;
 
 #[derive(Debug, Clone)]
 pub struct AgentReviewOutput {
@@ -75,18 +77,20 @@ pub trait FocusAnalyzer: Send + Sync {
 
 pub struct PluginRegistry {
     pub agents: Vec<Arc<dyn AgentPlugin>>,
+    pub standby_agents: VecDeque<Arc<dyn AgentPlugin>>,
     pub judge: Arc<dyn AgentPlugin>,
     pub analyzer: Arc<dyn FocusAnalyzer>,
 }
 
 impl PluginRegistry {
     pub fn from_config(cfg: &CrucibleConfig) -> Result<Self> {
-        if cfg.plugins.agents.is_empty() {
+        let resolved_agents = cfg.plugins.resolve_available_agents()?;
+        if resolved_agents.active.is_empty() {
             return Err(anyhow!("no agents configured"));
         }
 
         let mut agents: Vec<Arc<dyn AgentPlugin>> = Vec::new();
-        for id in &cfg.plugins.agents {
+        for id in &resolved_agents.active {
             let plugin_cfg = cfg
                 .plugins
                 .resolve_role(id)
@@ -94,27 +98,243 @@ impl PluginRegistry {
             let plugin = crate::plugins::cli_agent::CliAgentPlugin::from_config(id, plugin_cfg);
             agents.push(Arc::new(plugin));
         }
+        let mut standby_agents: VecDeque<Arc<dyn AgentPlugin>> = VecDeque::new();
+        for id in &resolved_agents.standby {
+            let plugin_cfg = cfg
+                .plugins
+                .resolve_role(id)
+                .ok_or_else(|| anyhow!("missing config for plugin {id}"))?;
+            let plugin = crate::plugins::cli_agent::CliAgentPlugin::from_config(id, plugin_cfg);
+            standby_agents.push_back(Arc::new(plugin));
+        }
+
+        let fallback_role = resolved_agents
+            .active
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow!("no available agents found on PATH"))?;
+        let judge_id = cfg.plugins.resolve_available_role(&cfg.plugins.judge, &fallback_role);
+        let analyzer_id = cfg
+            .plugins
+            .resolve_available_role(&cfg.plugins.analyzer, &fallback_role);
 
         let judge_cfg = cfg
             .plugins
-            .resolve_role(&cfg.plugins.judge)
+            .resolve_role(&judge_id)
             .ok_or_else(|| anyhow!("missing config for judge"))?;
         let analyzer_cfg = cfg
             .plugins
-            .resolve_role(&cfg.plugins.analyzer)
+            .resolve_role(&analyzer_id)
             .ok_or_else(|| anyhow!("missing config for analyzer"))?;
 
-        let judge =
-            crate::plugins::cli_agent::CliAgentPlugin::from_config(&cfg.plugins.judge, judge_cfg);
-        let analyzer = crate::plugins::cli_agent::CliAgentPlugin::from_config(
-            &cfg.plugins.analyzer,
-            analyzer_cfg,
-        );
+        let judge = crate::plugins::cli_agent::CliAgentPlugin::from_config(&judge_id, judge_cfg);
+        let analyzer =
+            crate::plugins::cli_agent::CliAgentPlugin::from_config(&analyzer_id, analyzer_cfg);
 
         Ok(Self {
             agents,
+            standby_agents,
             judge: Arc::new(judge),
             analyzer: Arc::new(analyzer),
         })
+    }
+}
+
+pub struct ResolvedAgents {
+    pub active: Vec<String>,
+    pub standby: Vec<String>,
+}
+
+impl crate::config::PluginsConfig {
+    fn preferred_agent_order(&self) -> [&'static str; 4] {
+        ["claude-code", "codex", "gemini", "open-code"]
+    }
+
+    fn uses_default_agent_pool(&self) -> bool {
+        self.agents.len() > 1
+            && self
+                .agents
+                .iter()
+                .all(|id| self.preferred_agent_order().contains(&id.as_str()))
+    }
+
+    pub fn resolve_available_agents(&self) -> Result<ResolvedAgents> {
+        let requested = if self.uses_default_agent_pool() {
+            self.preferred_agent_order()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        } else {
+            self.agents.clone()
+        };
+
+        let available = requested
+            .into_iter()
+            .filter(|id| self.role_on_path(id))
+            .collect::<Vec<_>>();
+
+        if !available.is_empty() {
+            let active = available.iter().take(3).cloned().collect::<Vec<_>>();
+            let standby = available.iter().skip(3).cloned().collect::<Vec<_>>();
+            return Ok(ResolvedAgents { active, standby });
+        }
+
+        if self.uses_default_agent_pool() {
+            return Err(anyhow!(
+                "no available agents found on PATH from preferred pool: claude-code, codex, gemini, open-code"
+            ));
+        }
+
+        Err(anyhow!("no configured agents found on PATH"))
+    }
+
+    pub fn resolve_available_role(&self, requested: &str, fallback: &str) -> String {
+        if self.role_on_path(requested) {
+            requested.to_string()
+        } else {
+            fallback.to_string()
+        }
+    }
+
+    fn role_on_path(&self, id: &str) -> bool {
+        self.resolve_role(id)
+            .map(|role| which(&role.command).is_ok())
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PluginRegistry;
+    use crate::config::CrucibleConfig;
+    use std::env;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::TempDir;
+
+    fn path_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct PathGuard {
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl PathGuard {
+        fn set(path: &Path) -> Self {
+            let original = env::var_os("PATH");
+            unsafe {
+                env::set_var("PATH", path);
+            }
+            Self { original }
+        }
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => unsafe {
+                    env::set_var("PATH", value);
+                },
+                None => unsafe {
+                    env::remove_var("PATH");
+                },
+            }
+        }
+    }
+
+    fn make_executable(dir: &Path, name: &str) {
+        let path = dir.join(name);
+        fs::write(&path, "#!/usr/bin/env sh\nexit 0\n").expect("write mock binary");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms).expect("chmod");
+        }
+    }
+
+    fn path_with_bins(dir: &TempDir) -> PathBuf {
+        dir.path().to_path_buf()
+    }
+
+    #[test]
+    fn registry_prefers_first_three_available_agents_in_order() {
+        let _lock = path_lock().lock().expect("path lock");
+        let dir = TempDir::new().expect("tempdir");
+        make_executable(dir.path(), "claude");
+        make_executable(dir.path(), "codex");
+        make_executable(dir.path(), "opencode");
+        let _guard = PathGuard::set(&path_with_bins(&dir));
+
+        let cfg = CrucibleConfig::default();
+        let registry = PluginRegistry::from_config(&cfg).expect("registry");
+        let ids = registry
+            .agents
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["claude-code", "codex", "open-code"]);
+        let standby = registry
+            .standby_agents
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        assert!(standby.is_empty());
+        assert_eq!(registry.judge.id(), "claude-code");
+    }
+
+    #[test]
+    fn registry_honors_explicit_single_reviewer_override() {
+        let _lock = path_lock().lock().expect("path lock");
+        let dir = TempDir::new().expect("tempdir");
+        make_executable(dir.path(), "opencode");
+        let _guard = PathGuard::set(&path_with_bins(&dir));
+
+        let mut cfg = CrucibleConfig::default();
+        cfg.plugins.agents = vec!["open-code".to_string()];
+        cfg.plugins.judge = "open-code".to_string();
+        cfg.plugins.analyzer = "open-code".to_string();
+
+        let registry = PluginRegistry::from_config(&cfg).expect("registry");
+        let ids = registry
+            .agents
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["open-code"]);
+        assert_eq!(registry.judge.id(), "open-code");
+    }
+
+    #[test]
+    fn registry_keeps_fourth_available_agent_as_standby() {
+        let _lock = path_lock().lock().expect("path lock");
+        let dir = TempDir::new().expect("tempdir");
+        make_executable(dir.path(), "claude");
+        make_executable(dir.path(), "codex");
+        make_executable(dir.path(), "gemini");
+        make_executable(dir.path(), "opencode");
+        let _guard = PathGuard::set(&path_with_bins(&dir));
+
+        let cfg = CrucibleConfig::default();
+        let registry = PluginRegistry::from_config(&cfg).expect("registry");
+        let ids = registry
+            .agents
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+        let standby = registry
+            .standby_agents
+            .iter()
+            .map(|agent| agent.id().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["claude-code", "codex", "gemini"]);
+        assert_eq!(standby, vec!["open-code"]);
     }
 }

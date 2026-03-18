@@ -134,7 +134,7 @@ include_tests = true
 timeout_secs = 30
 
 [plugins]
-agents = ["claude-code", "codex", "gemini"]
+agents = ["claude-code", "codex", "gemini", "open-code"]
 judge = "claude-code"
 analyzer = "claude-code"
 paths = []
@@ -163,6 +163,8 @@ args = []
 persona = "Correctness Reviewer"
 role_weight = 1.0
 ```
+
+By default Crucible picks up to 3 available reviewers from this preferred order: `claude-code`, `codex`, `gemini`, `open-code`. If `gemini` is unavailable, `open-code` is used as the third reviewer. If a selected reviewer later errors during review and a standby reviewer is available, Crucible swaps the standby in for the failed reviewer before continuing the round.
 
 ### CLI Agent Contract
 

@@ -154,6 +154,7 @@ impl Default for CrucibleConfig {
                     "claude-code".to_string(),
                     "codex".to_string(),
                     "gemini".to_string(),
+                    "open-code".to_string(),
                 ],
                 judge: "claude-code".to_string(),
                 analyzer: "claude-code".to_string(),

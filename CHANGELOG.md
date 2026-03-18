@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.25 - 2026-03-18
+
+- Added `opencode` support to the built-in CLI agent adapter, including non-interactive JSON invocation defaults and response parsing.
+- Changed review runs to tolerate analyzer/reviewer agent failures and still produce a final report with explicit `agent_failures`.
+- Changed progress logs to use human-readable local timestamps instead of raw numeric timestamps.
+- Expanded the default reviewer pool to `claude-code`, `codex`, `gemini`, and `open-code`, selecting up to three available agents in that order.
+- Added standby reviewer fallback so an available `open-code` reviewer can replace a failed active reviewer such as `gemini` during a round.
+
 ## 0.1.24 - 2026-03-11
 
 - Changed the TUI conversation viewer to reserve one latest transcript slot per configured agent instead of a shared rolling window.
