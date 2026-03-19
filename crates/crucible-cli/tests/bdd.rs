@@ -1076,6 +1076,7 @@ fn built_in_consensus_packs_are_shown(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("output available");
     assert!(output.status.success(), "command failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("review"));
     assert!(stdout.contains("requirements-review"));
     assert!(stdout.contains("design-review"));
     assert!(stdout.contains("test-plan-review"));

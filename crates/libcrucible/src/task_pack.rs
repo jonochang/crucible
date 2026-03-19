@@ -253,10 +253,46 @@ fn read_required(path: PathBuf) -> Result<String> {
 
 fn built_in_packs() -> Vec<TaskPack> {
     vec![
+        built_in_review_pack(),
         built_in_requirements_pack(),
         built_in_design_pack(),
         built_in_test_plan_pack(),
     ]
+}
+
+fn built_in_review_pack() -> TaskPack {
+    TaskPack {
+        manifest: TaskPackManifest {
+            id: "review".to_string(),
+            version: "1".to_string(),
+            title: "Code Review".to_string(),
+            description: "Build multi-agent consensus on code review findings.".to_string(),
+            allowed_attachment_kinds: vec![AttachmentKind::Diff, AttachmentKind::SourceFile],
+            context_providers: vec![
+                ContextProvider::GitDiff,
+                ContextProvider::SelectedFiles,
+                ContextProvider::RepoDocs,
+                ContextProvider::GitHistory,
+                ContextProvider::Prechecks,
+            ],
+            roles: vec![],
+            rounds: 2,
+            quorum: 0.75,
+            allow_clarifications: false,
+        },
+        analyzer_prompt: "You are a senior architect producing analyzer context for code review. Summarize what changed, architectural impact, focus areas, tradeoffs, affected modules, call chain, design patterns, and a reviewer checklist.".to_string(),
+        reviewer_prompt: "Perform an exhaustive code review of the changed code. Assess correctness, security, performance, error handling, edge cases, maintainability, and testing gaps. Every finding must include direct evidence with exact code location and short quote snippets.".to_string(),
+        judge_prompt: "Produce final review consensus, convergence judgments, canonical issues, and auto-fix guidance for agreed findings.".to_string(),
+        schema_json: r#"{
+  "type":"object",
+  "required":["findings"],
+  "properties":{
+    "findings":{"type":"array"}
+  }
+}"#.to_string(),
+        render_prompt: None,
+        source: TaskPackSource::BuiltIn,
+    }
 }
 
 fn built_in_requirements_pack() -> TaskPack {
@@ -376,6 +412,8 @@ mod tests {
     #[test]
     fn built_in_packs_are_available() {
         let cfg = CrucibleConfig::default();
+        let review = load_task_pack(&cfg, None, "review", &[]).unwrap();
+        assert_eq!(review.id(), "review");
         let pack = load_task_pack(&cfg, None, "requirements-review", &[]).unwrap();
         assert_eq!(pack.id(), "requirements-review");
     }

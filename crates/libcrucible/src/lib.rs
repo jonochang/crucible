@@ -16,6 +16,7 @@ use consensus::{ConsensusReport, ConsensusTaskRequest};
 use coordinator::Coordinator;
 use plugin::PluginRegistry;
 use report::ReviewReport;
+use task_pack::load_task_pack;
 use uuid::Uuid;
 
 pub async fn run_review(cfg: &config::CrucibleConfig) -> Result<ReviewReport> {
@@ -27,8 +28,9 @@ pub async fn run_review_with_run_id(
     run_id: Uuid,
 ) -> Result<ReviewReport> {
     let ctx = context::ReviewContext::from_push(&std::env::current_dir()?, cfg).await?;
+    let review_pack = load_task_pack(cfg, Some(&std::env::current_dir()?), "review", &[])?;
     let registry = PluginRegistry::from_config(cfg)?;
-    let mut coord = Coordinator::new(registry, cfg.clone(), None, run_id);
+    let mut coord = Coordinator::new(registry, cfg.clone(), None, run_id).with_review_pack(review_pack);
     coord.run(&ctx).await
 }
 
@@ -45,11 +47,14 @@ pub async fn run_review_with_progress_run_id(
     run_id: Uuid,
 ) -> Result<ReviewReport> {
     plugins::set_progress_sender(Some(tx.clone()))?;
+    let cwd = std::env::current_dir()?;
     let ctx =
-        context::ReviewContext::from_push_with_progress(&std::env::current_dir()?, cfg, Some(&tx))
+        context::ReviewContext::from_push_with_progress(&cwd, cfg, Some(&tx))
             .await?;
+    let review_pack = load_task_pack(cfg, Some(&cwd), "review", &[])?;
     let registry = PluginRegistry::from_config(cfg)?;
-    let mut coord = Coordinator::new(registry, cfg.clone(), Some(tx), run_id);
+    let mut coord =
+        Coordinator::new(registry, cfg.clone(), Some(tx), run_id).with_review_pack(review_pack);
     let result = coord.run(&ctx).await;
     let _ = plugins::set_progress_sender(None);
     result
@@ -70,15 +75,18 @@ pub async fn run_review_with_progress_diff_run_id(
     run_id: Uuid,
 ) -> Result<ReviewReport> {
     plugins::set_progress_sender(Some(tx.clone()))?;
+    let cwd = std::env::current_dir()?;
     let ctx = context::ReviewContext::from_diff_with_progress(
-        &std::env::current_dir()?,
+        &cwd,
         cfg,
         diff,
         Some(&tx),
     )
     .await?;
+    let review_pack = load_task_pack(cfg, Some(&cwd), "review", &[])?;
     let registry = PluginRegistry::from_config(cfg)?;
-    let mut coord = Coordinator::new(registry, cfg.clone(), Some(tx), run_id);
+    let mut coord =
+        Coordinator::new(registry, cfg.clone(), Some(tx), run_id).with_review_pack(review_pack);
     let result = coord.run(&ctx).await;
     let _ = plugins::set_progress_sender(None);
     result

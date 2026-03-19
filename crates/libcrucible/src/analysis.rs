@@ -1,4 +1,5 @@
 use crate::context::GatheredContext;
+use crate::task_pack::TaskPack;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,4 +29,5 @@ pub struct AgentContext {
     pub gathered: GatheredContext,
     pub focus: Option<FocusAreas>,
     pub dep_graph: Option<String>,
+    pub review_pack: Option<TaskPack>,
 }

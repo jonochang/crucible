@@ -499,6 +499,7 @@ impl ReviewContext {
             gathered: self.gathered.clone(),
             focus: focus.cloned(),
             dep_graph: self.dep_graph.clone(),
+            review_pack: None,
         }
     }
 }

@@ -21,6 +21,7 @@ pub struct Coordinator {
     consensus: ConsensusTracker,
     progress: Option<tokio::sync::mpsc::UnboundedSender<crate::progress::ProgressEvent>>,
     run_id: Uuid,
+    review_pack: Option<crate::task_pack::TaskPack>,
 }
 
 impl Coordinator {
@@ -38,7 +39,13 @@ impl Coordinator {
             consensus,
             progress,
             run_id,
+            review_pack: None,
         }
+    }
+
+    pub fn with_review_pack(mut self, review_pack: crate::task_pack::TaskPack) -> Self {
+        self.review_pack = Some(review_pack);
+        self
     }
 
     pub async fn run(&mut self, ctx: &ReviewContext) -> Result<crate::report::ReviewReport> {
@@ -59,7 +66,8 @@ impl Coordinator {
             phase: "analyzer".to_string(),
         });
         self.emit(ProgressEvent::AnalyzerStart);
-        let analyzer_ctx = ctx.into_agent_ctx(None);
+        let mut analyzer_ctx = ctx.into_agent_ctx(None);
+        analyzer_ctx.review_pack = self.review_pack.clone();
         let mut focus = None;
         let mut agent_failures = Vec::new();
         let analyzer_attempts: u8 = 2;
@@ -103,7 +111,8 @@ impl Coordinator {
         });
 
         let total_rounds = self.cfg.coordinator.max_rounds.max(1);
-        let agent_ctx = ctx.into_agent_ctx(Some(&focus));
+        let mut agent_ctx = ctx.into_agent_ctx(Some(&focus));
+        agent_ctx.review_pack = self.review_pack.clone();
         let diff_chunks = chunk_diff(
             &ctx.diff,
             self.cfg.coordinator.max_diff_lines_per_chunk,

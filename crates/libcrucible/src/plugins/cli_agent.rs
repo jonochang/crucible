@@ -269,14 +269,26 @@ impl CliAgentPlugin {
     fn review_prompt_round1(&self, ctx: &AgentContext) -> (String, String) {
         let (focus, references, history, prechecks) = self.build_context_sections(ctx);
         let role_focus = reviewer_focus_for_agent(&self.id);
+        let pack_title = ctx
+            .review_pack
+            .as_ref()
+            .map(|pack| pack.manifest.title.as_str())
+            .unwrap_or("code review");
+        let reviewer_prompt = ctx
+            .review_pack
+            .as_ref()
+            .map(|pack| pack.reviewer_prompt.as_str())
+            .unwrap_or(
+                "You MUST review all changed files/functions and assess correctness, security, performance, error handling, edge cases, and maintainability.",
+            );
         let system = format!(
-            "You are a {} performing an exhaustive round-1 code review.\n\
-            You MUST review all changed files/functions and assess correctness, security, performance, error handling, edge cases, and maintainability.\n\
+            "You are a {} performing an exhaustive round-1 {}.\n\
+            {}\n\
             Your primary lens is: {}.\n\
             Every finding MUST include direct evidence with exact code location and short quote snippets.\n\
             Respond ONLY with valid JSON matching this schema:\n\
             {{\n  \"narrative\": \"<concise analysis for terminal display>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"category\": \"<correctness|security|performance|maintainability|testing|style>\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"title\": \"<short issue title>\",\n    \"description\": \"<detailed issue description>\",\n    \"message\": \"<concise actionable issue>\",\n    \"suggested_fix\": \"<recommended fix or null>\",\n    \"evidence\": [{{\"location\":\"<path:line>\",\"quote\":\"<short code excerpt>\"}}],\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
-            self.persona, role_focus
+            self.persona, pack_title, reviewer_prompt, role_focus
         );
         let user = format!(
             "Round: 1\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nDiff to review:\n{}",
@@ -293,14 +305,26 @@ impl CliAgentPlugin {
     ) -> (String, String) {
         let (focus, references, history, prechecks) = self.build_context_sections(ctx);
         let role_focus = reviewer_focus_for_agent(&self.id);
+        let pack_title = ctx
+            .review_pack
+            .as_ref()
+            .map(|pack| pack.manifest.title.as_str())
+            .unwrap_or("review");
+        let reviewer_prompt = ctx
+            .review_pack
+            .as_ref()
+            .map(|pack| pack.reviewer_prompt.as_str())
+            .unwrap_or(
+                "You MUST use only prior-round discussion below (no same-round leakage), explicitly agree/disagree with prior points, and call out missed issues if any.",
+            );
         let system = format!(
-            "You are a {} performing adversarial round-{} review.\n\
-            You MUST use only prior-round discussion below (no same-round leakage), explicitly agree/disagree with prior points, and call out missed issues if any.\n\
+            "You are a {} performing adversarial round-{} {}.\n\
+            {}\n\
             Your primary lens is: {}.\n\
             Every finding MUST include direct evidence with exact code location and short quote snippets.\n\
             Respond ONLY with valid JSON matching this schema:\n\
             {{\n  \"narrative\": \"<concise agreement/disagreement summary>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"category\": \"<correctness|security|performance|maintainability|testing|style>\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"title\": \"<short issue title>\",\n    \"description\": \"<detailed issue description>\",\n    \"message\": \"<concise actionable issue>\",\n    \"suggested_fix\": \"<recommended fix or null>\",\n    \"evidence\": [{{\"location\":\"<path:line>\",\"quote\":\"<short code excerpt>\"}}],\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
-            self.persona, round, role_focus
+            self.persona, round, pack_title, reviewer_prompt, role_focus
         );
         let user = format!(
             "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nDiff to review:\n{}",
@@ -714,7 +738,15 @@ impl AgentPlugin for CliAgentPlugin {
     }
 
     async fn summarize(&self, ctx: &AgentContext, findings: &[Finding]) -> Result<AutoFix> {
-        let system = "You are a senior engineer producing an auto-fix for agreed findings.\nRespond ONLY with valid JSON: { \"unified_diff\": \"...\", \"explanation\": \"...\" }".to_string();
+        let judge_prompt = ctx
+            .review_pack
+            .as_ref()
+            .map(|pack| pack.judge_prompt.as_str())
+            .unwrap_or("Produce final review consensus and auto-fix guidance for agreed findings.");
+        let system = format!(
+            "You are a senior engineer producing an auto-fix for agreed findings.\n{}\nRespond ONLY with valid JSON: {{ \"unified_diff\": \"...\", \"explanation\": \"...\" }}",
+            judge_prompt
+        );
         let user = format!(
             "Findings:\n{}\n\nDiff:\n{}",
             serde_json::to_string(findings).unwrap_or_default(),
@@ -733,10 +765,15 @@ impl AgentPlugin for CliAgentPlugin {
         round: u8,
         findings: &[Finding],
     ) -> Result<ConvergenceDecision> {
-        let system = "You are a strict convergence judge for multi-agent code review.\n\
-Respond ONLY with valid JSON: {\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}.\n\
-Use CONVERGED only when there are no unresolved material disagreements and no net-new high-severity risk requiring another round."
-            .to_string();
+        let judge_prompt = ctx
+            .review_pack
+            .as_ref()
+            .map(|pack| pack.judge_prompt.as_str())
+            .unwrap_or("Produce final review consensus and convergence judgments for agreed findings.");
+        let system = format!(
+            "You are a strict convergence judge for multi-agent code review.\n{}\nRespond ONLY with valid JSON: {{\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}}.\nUse CONVERGED only when there are no unresolved material disagreements and no net-new high-severity risk requiring another round.",
+            judge_prompt
+        );
         let user = format!(
             "Round: {round}\nFindings so far:\n{}\n\nDiff:\n{}",
             serde_json::to_string(findings).unwrap_or_default(),
@@ -755,12 +792,18 @@ Use CONVERGED only when there are no unresolved material disagreements and no ne
 
     async fn structurize_issues(
         &self,
-        _ctx: &AgentContext,
+        ctx: &AgentContext,
         findings: &[Finding],
     ) -> Result<Vec<CanonicalIssue>> {
-        let system = "You are an issue structurizer.\n\
-Respond ONLY with valid JSON array where each item contains: severity, category, file, line_start, line_end, title, description, suggested_fix, raised_by."
-            .to_string();
+        let judge_prompt = ctx
+            .review_pack
+            .as_ref()
+            .map(|pack| pack.judge_prompt.as_str())
+            .unwrap_or("Produce final review consensus and canonical issues for agreed findings.");
+        let system = format!(
+            "You are an issue structurizer.\n{}\nRespond ONLY with valid JSON array where each item contains: severity, category, file, line_start, line_end, title, description, suggested_fix, raised_by.",
+            judge_prompt
+        );
         let user = format!(
             "Normalize these findings into canonical issues (merge duplicates):\n{}",
             serde_json::to_string(findings).unwrap_or_default()
@@ -844,11 +887,15 @@ Respond ONLY with valid JSON array where each item contains: severity, category,
 #[async_trait]
 impl FocusAnalyzer for CliAgentPlugin {
     async fn analyze_focus(&self, ctx: &AgentContext) -> Result<FocusAreas> {
-        let system = "You are a senior architect producing analyzer context for code review.\n\
-Output ONLY valid JSON matching this schema:\n\
-{\n  \"summary\": \"<what changed, architecture impact, and purpose>\",\n  \"focus_items\": [{ \"area\": \"<review area>\", \"rationale\": \"<why this needs focus>\" }],\n  \"trade_offs\": [\"<trade-off or risk>\"],\n  \"affected_modules\": [\"<module/component impacted>\"],\n  \"call_chain\": [\"<entrypoint -> downstream path>\"],\n  \"design_patterns\": [\"<pattern used or violated>\"],\n  \"reviewer_checklist\": [\"<targeted checklist item for reviewers>\"]\n}\n\
-The summary must be markdown-ready text."
-            .to_string();
+        let analyzer_prompt = ctx
+            .review_pack
+            .as_ref()
+            .map(|pack| pack.analyzer_prompt.as_str())
+            .unwrap_or("You are a senior architect producing analyzer context for code review.");
+        let system = format!(
+            "{}\nOutput ONLY valid JSON matching this schema:\n{{\n  \"summary\": \"<what changed, architecture impact, and purpose>\",\n  \"focus_items\": [{{ \"area\": \"<review area>\", \"rationale\": \"<why this needs focus>\" }}],\n  \"trade_offs\": [\"<trade-off or risk>\"],\n  \"affected_modules\": [\"<module/component impacted>\"],\n  \"call_chain\": [\"<entrypoint -> downstream path>\"],\n  \"design_patterns\": [\"<pattern used or violated>\"],\n  \"reviewer_checklist\": [\"<targeted checklist item for reviewers>\"]\n}}\nThe summary must be markdown-ready text.",
+            analyzer_prompt
+        );
         let user = format!("Diff to review:\n{}", ctx.diff);
         let resp: FocusAreas = self.run_cli(system, user)?;
         Ok(resp)
@@ -1037,6 +1084,7 @@ mod tests {
             gathered: GatheredContext::default(),
             focus: None,
             dep_graph: None,
+            review_pack: None,
         }
     }
 
