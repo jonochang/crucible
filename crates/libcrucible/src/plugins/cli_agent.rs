@@ -1,10 +1,15 @@
 use crate::analysis::{AgentContext, FocusAreas};
+use crate::consensus::{ConsensusAnchor, ConsensusItem, ItemImportance, TaskContext};
 use crate::config::CliPluginConfig;
-use crate::plugin::{AgentPlugin, AgentReviewOutput, ConvergenceDecision, FocusAnalyzer};
+use crate::plugin::{
+    AgentPlugin, AgentReviewOutput, ConvergenceDecision, FocusAnalyzer, GenericAgentOutput,
+    GenericFinalOutput, RawConsensusItem,
+};
 use crate::progress::{ProgressEvent, TranscriptDirection};
 use crate::report::{
     AutoFix, CanonicalIssue, Confidence, EvidenceAnchor, Finding, RawFinding, Severity,
 };
+use crate::task_pack::TaskPack;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -300,6 +305,60 @@ impl CliAgentPlugin {
         let user = format!(
             "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nDiff to review:\n{}",
             round, synthesis.summary, focus, references, history, prechecks, ctx.diff
+        );
+        (system, user)
+    }
+
+    fn task_context_json(&self, ctx: &TaskContext) -> String {
+        let payload = serde_json::json!({
+            "prompt": ctx.prompt,
+            "attachments": ctx.attachments,
+            "docs": ctx.docs,
+            "history": ctx.history,
+            "prechecks": ctx.prechecks,
+            "clarifications": ctx.clarification_history,
+            "analyzer_summary": ctx.analyzer_summary,
+        });
+        serde_json::to_string(&payload).unwrap_or_default()
+    }
+
+    fn task_prompt_round1(&self, ctx: &TaskContext, pack: &TaskPack) -> (String, String) {
+        let system = format!(
+            "You are a {} contributing to a multi-agent consensus task.\n\
+             Task pack: {} - {}.\n\
+             {}\n\
+             Respond ONLY with valid JSON matching this schema:\n\
+             {{\"narrative\":\"<concise summary>\",\"items\":[{{\"kind\":\"risk|decision|question|recommendation|gap\",\"importance\":\"high|medium|low\",\"title\":\"<short title>\",\"message\":\"<actionable message>\",\"confidence\":\"High|Medium|Low\",\"anchors\":[{{\"attachment_id\":\"<attachment id>\",\"quote\":\"<short supporting quote>\"}}]}}]}}",
+            self.persona, pack.manifest.title, pack.manifest.description, pack.reviewer_prompt
+        );
+        let user = format!(
+            "Round: 1\nTask context:\n{}\n\nExpected final schema:\n{}\n",
+            self.task_context_json(ctx),
+            pack.schema_json
+        );
+        (system, user)
+    }
+
+    fn task_prompt_round_n(
+        &self,
+        ctx: &TaskContext,
+        pack: &TaskPack,
+        round: u8,
+        prior_summary: &str,
+    ) -> (String, String) {
+        let system = format!(
+            "You are a {} contributing to round-{} of a multi-agent consensus task.\n\
+             Task pack: {} - {}.\n\
+             {}\n\
+             Explicitly agree or disagree with prior points, surface missed issues, and preserve unresolved disagreements.\n\
+             Respond ONLY with valid JSON matching this schema:\n\
+             {{\"narrative\":\"<agreement/disagreement summary>\",\"items\":[{{\"kind\":\"risk|decision|question|recommendation|gap\",\"importance\":\"high|medium|low\",\"title\":\"<short title>\",\"message\":\"<actionable message>\",\"confidence\":\"High|Medium|Low\",\"anchors\":[{{\"attachment_id\":\"<attachment id>\",\"quote\":\"<short supporting quote>\"}}]}}]}}",
+            self.persona, round, pack.manifest.title, pack.manifest.description, pack.reviewer_prompt
+        );
+        let user = format!(
+            "Round: {round}\nPrior consensus summary:\n{prior_summary}\n\nTask context:\n{}\n\nExpected final schema:\n{}\n",
+            self.task_context_json(ctx),
+            pack.schema_json
         );
         (system, user)
     }
@@ -709,6 +768,77 @@ Respond ONLY with valid JSON array where each item contains: severity, category,
         let resp: Vec<CanonicalIssueResponse> = self.run_cli(system, user)?;
         Ok(resp.into_iter().map(CanonicalIssue::from).collect())
     }
+
+    async fn analyze_task(&self, ctx: &TaskContext, pack: &TaskPack) -> Result<GenericAgentOutput> {
+        let (system, user) = self.task_prompt_round1(ctx, pack);
+        let resp: GenericItemsResponse = self.run_cli(system, user)?;
+        Ok(resp.into())
+    }
+
+    async fn debate_task(
+        &self,
+        ctx: &TaskContext,
+        pack: &TaskPack,
+        round: u8,
+        prior_summary: &str,
+    ) -> Result<GenericAgentOutput> {
+        let (system, user) = self.task_prompt_round_n(ctx, pack, round, prior_summary);
+        let resp: GenericItemsResponse = self.run_cli(system, user)?;
+        Ok(resp.into())
+    }
+
+    async fn summarize_task(
+        &self,
+        ctx: &TaskContext,
+        pack: &TaskPack,
+        agreed_items: &[ConsensusItem],
+        unresolved_items: &[ConsensusItem],
+    ) -> Result<GenericFinalOutput> {
+        let system = format!(
+            "You are the final judge for a multi-agent consensus task.\n\
+             Task pack: {} - {}.\n\
+             {}\n\
+             Respond ONLY with valid JSON matching this schema:\n\
+             {{\"summary_markdown\":\"<markdown summary>\",\"result\":<json object matching schema>,\"clarification_requests\":[\"<question>\"]}}",
+            pack.manifest.title, pack.manifest.description, pack.judge_prompt
+        );
+        let user = format!(
+            "Task context:\n{}\n\nAgreed items:\n{}\n\nUnresolved items:\n{}\n\nExpected final schema:\n{}",
+            self.task_context_json(ctx),
+            serde_json::to_string(agreed_items).unwrap_or_default(),
+            serde_json::to_string(unresolved_items).unwrap_or_default(),
+            pack.schema_json
+        );
+        let resp: GenericFinalResponse = self.run_cli(system, user)?;
+        Ok(GenericFinalOutput {
+            summary_markdown: resp.summary_markdown,
+            result_json: resp.result,
+            clarification_requests: resp.clarification_requests,
+        })
+    }
+
+    async fn judge_task_convergence(
+        &self,
+        ctx: &TaskContext,
+        round: u8,
+        items: &[ConsensusItem],
+    ) -> Result<ConvergenceDecision> {
+        let system = "You are a strict convergence judge for a multi-agent consensus task.\nRespond ONLY with valid JSON: {\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}.".to_string();
+        let user = format!(
+            "Round: {round}\nTask context:\n{}\n\nConsensus items so far:\n{}",
+            self.task_context_json(ctx),
+            serde_json::to_string(items).unwrap_or_default()
+        );
+        let resp: ConvergenceResponse = self.run_cli(system, user)?;
+        let verdict = match resp.verdict.as_str() {
+            "CONVERGED" => crate::progress::ConvergenceVerdict::Converged,
+            _ => crate::progress::ConvergenceVerdict::NotConverged,
+        };
+        Ok(ConvergenceDecision {
+            verdict,
+            rationale: resp.rationale,
+        })
+    }
 }
 
 #[async_trait]
@@ -720,6 +850,20 @@ Output ONLY valid JSON matching this schema:\n\
 The summary must be markdown-ready text."
             .to_string();
         let user = format!("Diff to review:\n{}", ctx.diff);
+        let resp: FocusAreas = self.run_cli(system, user)?;
+        Ok(resp)
+    }
+
+    async fn analyze_task_focus(&self, ctx: &TaskContext) -> Result<FocusAreas> {
+        let system = "You are a senior analyst preparing focus areas for a generic multi-agent consensus task.\n\
+Output ONLY valid JSON matching this schema:\n\
+{\n  \"summary\": \"<task summary>\",\n  \"focus_items\": [{ \"area\": \"<focus area>\", \"rationale\": \"<why it matters>\" }],\n  \"trade_offs\": [\"<trade-off or risk>\"],\n  \"affected_modules\": [\"<artifact or subsystem>\"],\n  \"call_chain\": [\"<important flow>\"],\n  \"design_patterns\": [\"<pattern or structure>\"],\n  \"reviewer_checklist\": [\"<checklist item>\"]\n}"
+            .to_string();
+        let user = format!(
+            "Task prompt:\n{}\n\nAttachments and context:\n{}",
+            ctx.prompt,
+            self.task_context_json(ctx)
+        );
         let resp: FocusAreas = self.run_cli(system, user)?;
         Ok(resp)
     }
@@ -803,6 +947,62 @@ struct CanonicalIssueResponse {
     suggested_fix: Option<String>,
     #[serde(default)]
     raised_by: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenericItemsResponse {
+    #[serde(default)]
+    narrative: Option<String>,
+    items: Vec<GenericItemResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenericItemResponse {
+    kind: String,
+    importance: String,
+    title: String,
+    message: String,
+    confidence: String,
+    #[serde(default)]
+    anchors: Vec<ConsensusAnchor>,
+}
+
+impl From<GenericItemsResponse> for GenericAgentOutput {
+    fn from(value: GenericItemsResponse) -> Self {
+        Self {
+            narrative: value.narrative.unwrap_or_default(),
+            items: value.items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<GenericItemResponse> for RawConsensusItem {
+    fn from(value: GenericItemResponse) -> Self {
+        Self {
+            kind: value.kind,
+            importance: match value.importance.to_lowercase().as_str() {
+                "high" => ItemImportance::High,
+                "medium" => ItemImportance::Medium,
+                _ => ItemImportance::Low,
+            },
+            title: value.title,
+            message: value.message,
+            confidence: match value.confidence.as_str() {
+                "High" => Confidence::High,
+                "Medium" => Confidence::Medium,
+                _ => Confidence::Low,
+            },
+            anchors: value.anchors,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GenericFinalResponse {
+    summary_markdown: String,
+    result: serde_json::Value,
+    #[serde(default)]
+    clarification_requests: Vec<String>,
 }
 
 impl From<CanonicalIssueResponse> for CanonicalIssue {

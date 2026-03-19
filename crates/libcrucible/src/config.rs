@@ -14,6 +14,8 @@ pub struct CrucibleConfig {
     pub rate_limits: RateLimitConfig,
     #[serde(default)]
     pub prechecks: PrecheckConfig,
+    #[serde(default)]
+    pub task_packs: TaskPackConfig,
     pub plugins: PluginsConfig,
 }
 
@@ -72,6 +74,12 @@ pub struct PrecheckConfig {
     pub include_type_checks: bool,
     pub include_tests: bool,
     pub timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TaskPackConfig {
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 impl Default for PrecheckConfig {
@@ -149,6 +157,7 @@ impl Default for CrucibleConfig {
                 openai_rpm: 60,
             },
             prechecks: PrecheckConfig::default(),
+            task_packs: TaskPackConfig::default(),
             plugins: PluginsConfig {
                 agents: vec![
                     "claude-code".to_string(),

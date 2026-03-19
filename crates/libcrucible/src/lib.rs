@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod artifacts;
+pub mod consensus;
 pub mod config;
 pub mod context;
 pub mod coordinator;
@@ -8,8 +9,10 @@ pub mod plugins;
 pub mod pr_review;
 pub mod progress;
 pub mod report;
+pub mod task_pack;
 
 use anyhow::Result;
+use consensus::{ConsensusReport, ConsensusTaskRequest};
 use coordinator::Coordinator;
 use plugin::PluginRegistry;
 use report::ReviewReport;
@@ -79,4 +82,19 @@ pub async fn run_review_with_progress_diff_run_id(
     let result = coord.run(&ctx).await;
     let _ = plugins::set_progress_sender(None);
     result
+}
+
+pub async fn run_consensus(
+    cfg: &config::CrucibleConfig,
+    request: ConsensusTaskRequest,
+) -> Result<ConsensusReport> {
+    run_consensus_with_run_id(cfg, request, Uuid::new_v4()).await
+}
+
+pub async fn run_consensus_with_run_id(
+    cfg: &config::CrucibleConfig,
+    request: ConsensusTaskRequest,
+    run_id: Uuid,
+) -> Result<ConsensusReport> {
+    consensus::run_consensus(cfg, request, run_id).await
 }

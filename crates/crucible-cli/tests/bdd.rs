@@ -16,6 +16,8 @@ struct CliWorld {
     report_path: Option<PathBuf>,
     github_payload_path: Option<PathBuf>,
     prompt_capture_path: Option<PathBuf>,
+    custom_task_path: Option<PathBuf>,
+    consensus_session_id: Option<String>,
     interrupt_status: Option<i32>,
     interrupt_stderr: Option<String>,
 }
@@ -40,6 +42,14 @@ fn run_cmd(args: &[&str], cwd: Option<&Path>) -> std::process::Output {
 #[given("an empty temp project")]
 fn empty_temp_project(world: &mut CliWorld) {
     world.temp_dir = Some(TempDir::new().expect("temp dir"));
+}
+
+fn workspace_dir(world: &CliWorld) -> &Path {
+    world
+        .repo_dir
+        .as_deref()
+        .or_else(|| world.temp_dir.as_ref().map(|dir| dir.path()))
+        .expect("workspace dir")
 }
 
 fn init_git_repo(world: &mut CliWorld) {
@@ -210,6 +220,160 @@ fn write_mock_agent_config(world: &mut CliWorld, sleep_secs: Option<u64>) {
         1,
         "Mock finding",
     );
+}
+
+fn write_generic_consensus_mock_config(world: &mut CliWorld) {
+    let root = workspace_dir(world);
+    let mock_path = root.join("mock-consensus-agent.sh");
+    let script = r##"#!/usr/bin/env sh
+cat >/dev/null
+cat <<'JSON'
+{
+  "summary":"Mock analysis summary",
+  "focus_items":[{"area":"Mock","rationale":"Mock rationale"}],
+  "trade_offs":["none"],
+  "affected_modules":["docs"],
+  "call_chain":[],
+  "design_patterns":[],
+  "reviewer_checklist":["Check ambiguities"],
+  "narrative":"Mock consensus narrative",
+  "items":[
+    {
+      "kind":"risk",
+      "importance":"medium",
+      "title":"Mock consensus item",
+      "message":"Need clearer acceptance criteria",
+      "confidence":"Low",
+      "anchors":[{"attachment_id":"inline-1","quote":"sample"}]
+    }
+  ],
+  "summary_markdown":"# Mock Consensus\n\n- Need clearer acceptance criteria\n",
+  "result":{
+    "accepted_requirements":["User can do X"],
+    "ambiguities":["Clarify edge cases"],
+    "missing_acceptance_criteria":["Need explicit success metric"],
+    "risks":["Hidden dependency"],
+    "recommended_next_steps":["Add examples"],
+    "decision_summary":"Use the proposed design",
+    "tradeoffs":["Mock tradeoff"],
+    "open_questions":["Mock question"],
+    "failure_modes":["Mock failure"],
+    "recommended_changes":["Mock change"],
+    "coverage_gaps":["Mock coverage gap"],
+    "high_risk_scenarios":["Mock scenario"],
+    "missing_fixtures":["Mock fixture"],
+    "recommended_test_matrix":["Mock matrix"],
+    "release_blockers":["Mock blocker"],
+    "custom_answers":["Mock custom answer"]
+  },
+  "clarification_requests":["What environment constraints apply?"],
+  "verdict":"CONVERGED",
+  "rationale":"Sufficient alignment"
+}
+JSON
+"##;
+    std::fs::write(&mock_path, script).expect("write consensus mock agent");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&mock_path)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&mock_path, perms).expect("set permissions");
+    }
+
+    let config = format!(
+        r#"[crucible]
+version = "1"
+
+[gate]
+enabled = true
+untangle_bin = "untangle"
+
+[context]
+reference_max_depth = 2
+reference_max_files = 30
+history_max_commits = 20
+history_max_days = 30
+docs_patterns = ["docs/**/*.md", "README.md", "ARCHITECTURE.md"]
+docs_max_bytes = 50000
+
+[coordinator]
+max_rounds = 2
+quorum_threshold = 0.75
+agent_timeout_secs = 30
+devil_advocate = false
+
+[verdict]
+block_on = "Critical"
+
+[rate_limits]
+anthropic_rpm = 50
+google_rpm = 60
+openai_rpm = 60
+
+[task_packs]
+paths = []
+
+[plugins]
+agents = ["claude-code"]
+judge = "claude-code"
+analyzer = "claude-code"
+paths = []
+
+[plugins.claude-code]
+command = "{mock}"
+args = []
+persona = "Mock Consensus Reviewer"
+role_weight = 1.0
+
+[plugins.codex]
+command = "{mock}"
+args = []
+persona = "Mock Consensus Reviewer"
+role_weight = 1.0
+
+[plugins.gemini]
+command = "{mock}"
+args = []
+persona = "Mock Consensus Reviewer"
+role_weight = 1.0
+
+[plugins.open-code]
+command = "{mock}"
+args = []
+persona = "Mock Consensus Reviewer"
+role_weight = 1.0
+"#,
+        mock = mock_path.display()
+    );
+    std::fs::write(root.join(".crucible.toml"), config).expect("write consensus config");
+}
+
+fn write_custom_consensus_task_pack(world: &mut CliWorld) {
+    let root = workspace_dir(world);
+    let custom_root = root.join("custom-task-packs");
+    let pack_dir = custom_root.join("custom-review");
+    std::fs::create_dir_all(&pack_dir).expect("create custom pack dir");
+    std::fs::write(
+        pack_dir.join("pack.toml"),
+        r#"id = "custom-review"
+version = "1"
+title = "Custom Review"
+description = "A custom test pack"
+allowed_attachment_kinds = ["text"]
+context_providers = ["prompt_only"]
+rounds = 1
+quorum = 1.0
+allow_clarifications = true
+"#,
+    )
+    .expect("write custom pack manifest");
+    std::fs::write(pack_dir.join("reviewer.md"), "Review the custom task.").expect("reviewer");
+    std::fs::write(pack_dir.join("judge.md"), "Summarize the custom task.").expect("judge");
+    std::fs::write(pack_dir.join("schema.json"), r#"{"type":"object"}"#).expect("schema");
+    world.custom_task_path = Some(custom_root);
 }
 
 fn write_mock_agent_config_custom(
@@ -569,6 +733,12 @@ fn run_review_help(world: &mut CliWorld) {
     world.output = Some(output);
 }
 
+#[when("I list consensus packs")]
+fn list_consensus_packs(world: &mut CliWorld) {
+    let root = workspace_dir(world);
+    world.output = Some(run_cmd(&["consensus", "packs"], Some(root)));
+}
+
 #[given("a git repo with a diff")]
 fn git_repo_with_diff(world: &mut CliWorld) {
     init_git_repo(world);
@@ -598,6 +768,16 @@ fn git_repo_with_deleted_source_range(world: &mut CliWorld) {
 #[given("a mock crucible config")]
 fn mock_crucible_config(world: &mut CliWorld) {
     write_mock_agent_config(world, None);
+}
+
+#[given("a generic consensus mock crucible config")]
+fn generic_consensus_mock_crucible_config(world: &mut CliWorld) {
+    write_generic_consensus_mock_config(world);
+}
+
+#[given("a custom consensus task pack in an arbitrary folder")]
+fn custom_consensus_task_pack(world: &mut CliWorld) {
+    write_custom_consensus_task_pack(world);
 }
 
 #[given("a slow mock crucible config")]
@@ -640,6 +820,77 @@ fn run_review(world: &mut CliWorld) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");
     let output = run_cmd(&["review"], Some(repo_dir));
     world.output = Some(output);
+}
+
+#[when("I run consensus for requirements review as json")]
+fn run_consensus_for_requirements_review_as_json(world: &mut CliWorld) {
+    let root = workspace_dir(world);
+    world.output = Some(run_cmd(
+        &[
+            "consensus",
+            "run",
+            "--pack",
+            "requirements-review",
+            "--prompt",
+            "Review these requirements",
+            "--attach-text",
+            "The user can create a widget.",
+            "--format",
+            "json",
+        ],
+        Some(root),
+    ));
+}
+
+#[when("I run consensus for the custom pack from an explicit task path as json")]
+fn run_consensus_for_custom_pack_as_json(world: &mut CliWorld) {
+    let root = workspace_dir(world);
+    let task_path = world
+        .custom_task_path
+        .as_ref()
+        .expect("custom task path")
+        .display()
+        .to_string();
+    world.output = Some(run_cmd(
+        &[
+            "consensus",
+            "run",
+            "--pack",
+            "custom-review",
+            "--task-path",
+            task_path.as_str(),
+            "--prompt",
+            "Review this custom task",
+            "--attach-text",
+            "Custom attachment",
+            "--format",
+            "json",
+        ],
+        Some(root),
+    ));
+}
+
+#[when("I reply to the saved consensus session as json")]
+fn reply_to_saved_consensus_session_as_json(world: &mut CliWorld) {
+    let root = workspace_dir(world);
+    let session = world
+        .consensus_session_id
+        .as_ref()
+        .expect("saved consensus session")
+        .clone();
+    world.output = Some(run_cmd(
+        &[
+            "consensus",
+            "reply",
+            "--session",
+            session.as_str(),
+            "--message",
+            "We are targeting a hosted environment.",
+            "--format",
+            "json",
+        ],
+        Some(root),
+    ));
 }
 
 #[when("I run review with local target")]
@@ -820,6 +1071,16 @@ fn review_help_shows_usage(world: &mut CliWorld) {
     assert!(stdout.contains("Usage: crucible review"));
 }
 
+#[then("the built-in consensus packs are shown")]
+fn built_in_consensus_packs_are_shown(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("requirements-review"));
+    assert!(stdout.contains("design-review"));
+    assert!(stdout.contains("test-plan-review"));
+}
+
 #[then("the review verdict is pass")]
 fn review_verdict_pass(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("output available");
@@ -834,6 +1095,59 @@ fn review_verdict_warn(world: &mut CliWorld) {
     assert!(output.status.success(), "command failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Verdict: WARN"));
+}
+
+fn parse_consensus_report(world: &mut CliWorld) -> serde_json::Value {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("parse consensus report");
+    if let Some(session) = json.get("session_id").and_then(|v| v.as_str()) {
+        world.consensus_session_id = Some(session.to_string());
+    }
+    json
+}
+
+#[then("the consensus report includes the requirements review pack")]
+fn consensus_report_includes_requirements_pack(world: &mut CliWorld) {
+    let json = parse_consensus_report(world);
+    assert_eq!(
+        json.get("pack_id").and_then(|v| v.as_str()),
+        Some("requirements-review")
+    );
+    assert!(json.get("summary_markdown").is_some(), "summary missing");
+    assert!(json.get("result_json").is_some(), "result_json missing");
+}
+
+#[then("the consensus report includes the custom pack")]
+fn consensus_report_includes_custom_pack(world: &mut CliWorld) {
+    let json = parse_consensus_report(world);
+    assert_eq!(
+        json.get("pack_id").and_then(|v| v.as_str()),
+        Some("custom-review")
+    );
+}
+
+#[then("the consensus reply includes the custom pack")]
+fn consensus_reply_includes_custom_pack(world: &mut CliWorld) {
+    let json = parse_consensus_report(world);
+    assert_eq!(
+        json.get("pack_id").and_then(|v| v.as_str()),
+        Some("custom-review")
+    );
+}
+
+#[then("the consensus session is persisted")]
+fn consensus_session_is_persisted(world: &mut CliWorld) {
+    let root = workspace_dir(world);
+    let session = world
+        .consensus_session_id
+        .as_ref()
+        .expect("consensus session id");
+    let session_dir = root.join(".crucible").join("sessions").join(session);
+    assert!(session_dir.exists(), "session dir missing");
+    assert!(session_dir.join("report.json").exists(), "session report missing");
+    assert!(session_dir.join("request.json").exists(), "session request missing");
 }
 
 #[then("the review findings include the mock finding")]

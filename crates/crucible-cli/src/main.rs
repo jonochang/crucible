@@ -7,7 +7,7 @@ mod log_helpers;
 mod tui;
 
 #[derive(Parser)]
-#[command(name = "crucible", version, about = "Multi-agent code review CLI")]
+#[command(name = "crucible", version, about = "Multi-agent consensus CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -15,6 +15,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    Consensus(commands::consensus::ConsensusArgs),
     Review(commands::review::ReviewArgs),
     PromptEval(commands::prompt_eval::PromptEvalArgs),
     Hook(commands::hook::HookArgs),
@@ -35,6 +36,7 @@ async fn main() -> ExitCode {
 async fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Consensus(args) => commands::consensus::run(args).await,
         Command::Review(args) => commands::review::run(args).await,
         Command::PromptEval(args) => commands::prompt_eval::run(args).await,
         Command::Hook(args) => commands::hook::run(args),

@@ -14,6 +14,29 @@ Feature: Crucible CLI
     When I run review help
     Then the review help shows usage
 
+  Scenario: List built-in consensus packs
+    Given an empty temp project
+    And a generic consensus mock crucible config
+    When I list consensus packs
+    Then the built-in consensus packs are shown
+
+  Scenario: Run consensus with a built-in pack
+    Given an empty temp project
+    And a generic consensus mock crucible config
+    When I run consensus for requirements review as json
+    Then the consensus report includes the requirements review pack
+    And the consensus session is persisted
+
+  Scenario: Resume a custom consensus pack from saved session
+    Given an empty temp project
+    And a generic consensus mock crucible config
+    And a custom consensus task pack in an arbitrary folder
+    When I run consensus for the custom pack from an explicit task path as json
+    Then the consensus report includes the custom pack
+    And the consensus session is persisted
+    When I reply to the saved consensus session as json
+    Then the consensus reply includes the custom pack
+
   Scenario: Run review with a mock agent
     Given a git repo with a diff
     And a mock crucible config

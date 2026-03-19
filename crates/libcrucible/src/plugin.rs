@@ -1,8 +1,10 @@
 use crate::analysis::AgentContext;
+use crate::consensus::{ConsensusAnchor, ConsensusItem, ItemImportance, TaskContext};
 use crate::analysis::FocusAreas;
 use crate::config::CrucibleConfig;
 use crate::progress::ConvergenceVerdict;
 use crate::report::{AutoFix, CanonicalIssue, Finding, RawFinding};
+use crate::task_pack::TaskPack;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use std::collections::VecDeque;
@@ -19,6 +21,29 @@ pub struct AgentReviewOutput {
 pub struct ConvergenceDecision {
     pub verdict: ConvergenceVerdict,
     pub rationale: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GenericAgentOutput {
+    pub items: Vec<RawConsensusItem>,
+    pub narrative: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GenericFinalOutput {
+    pub summary_markdown: String,
+    pub result_json: serde_json::Value,
+    pub clarification_requests: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RawConsensusItem {
+    pub kind: String,
+    pub importance: ItemImportance,
+    pub title: String,
+    pub message: String,
+    pub confidence: crate::report::Confidence,
+    pub anchors: Vec<ConsensusAnchor>,
 }
 
 #[async_trait]
@@ -57,6 +82,42 @@ pub trait AgentPlugin: Send + Sync {
         Ok(Vec::new())
     }
 
+    async fn analyze_task(&self, _ctx: &TaskContext, _pack: &TaskPack) -> Result<GenericAgentOutput> {
+        Err(anyhow!("generic task analysis is not implemented for {}", self.id()))
+    }
+
+    async fn debate_task(
+        &self,
+        _ctx: &TaskContext,
+        _pack: &TaskPack,
+        _round: u8,
+        _prior_summary: &str,
+    ) -> Result<GenericAgentOutput> {
+        Err(anyhow!("generic task debate is not implemented for {}", self.id()))
+    }
+
+    async fn summarize_task(
+        &self,
+        _ctx: &TaskContext,
+        _pack: &TaskPack,
+        _agreed_items: &[ConsensusItem],
+        _unresolved_items: &[ConsensusItem],
+    ) -> Result<GenericFinalOutput> {
+        Err(anyhow!("generic task summary is not implemented for {}", self.id()))
+    }
+
+    async fn judge_task_convergence(
+        &self,
+        _ctx: &TaskContext,
+        _round: u8,
+        _items: &[ConsensusItem],
+    ) -> Result<ConvergenceDecision> {
+        Ok(ConvergenceDecision {
+            verdict: ConvergenceVerdict::NotConverged,
+            rationale: "No generic convergence judge configured".to_string(),
+        })
+    }
+
     fn session_capability(&self) -> Option<&dyn SessionCapable> {
         None
     }
@@ -73,6 +134,18 @@ pub trait SessionCapable {
 #[async_trait]
 pub trait FocusAnalyzer: Send + Sync {
     async fn analyze_focus(&self, ctx: &AgentContext) -> Result<FocusAreas>;
+
+    async fn analyze_task_focus(&self, _ctx: &TaskContext) -> Result<FocusAreas> {
+        Ok(FocusAreas {
+            summary: String::new(),
+            focus_items: Vec::new(),
+            trade_offs: Vec::new(),
+            affected_modules: Vec::new(),
+            call_chain: Vec::new(),
+            design_patterns: Vec::new(),
+            reviewer_checklist: Vec::new(),
+        })
+    }
 }
 
 pub struct PluginRegistry {
