@@ -2,7 +2,7 @@ use crate::config::CrucibleConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,24 +85,22 @@ fn run_untangle_tools(repo_root: &Path, program: &str, timeout_secs: u64) -> Vec
             command: "crucible analyze . --format json --quiet".to_string(),
         }];
     }
-    // Verified against `untangle --help`: analyze|diff|graph|config|service-graph|quality.
-    // Run structural analysis plus CRAP quality report.
+    // Verified against `untangle --help`: both analyze and quality require a nested subcommand.
+    // Run the default structural report plus the engineer-facing quality report.
     vec![
         run_tool(
             repo_root,
             program,
-            &["analyze", ".", "--format", "json", "--quiet"],
+            &["analyze", "report", ".", "--format", "json", "--quiet"],
             timeout_secs,
-            "untangle-analyze",
+            "untangle-analyze-report",
         ),
         run_tool(
             repo_root,
             program,
-            &[
-                "quality", ".", "--metric", "crap", "--format", "json", "--quiet",
-            ],
+            &["quality", "report", ".", "--format", "json", "--quiet"],
             timeout_secs,
-            "untangle-quality-crap",
+            "untangle-quality-report",
         ),
     ]
 }
@@ -116,7 +114,10 @@ fn run_tool(
 ) -> PrecheckSignal {
     let command = format!("{program} {}", args.join(" "));
     let mut cmd = Command::new(program);
-    cmd.current_dir(repo_root).args(args);
+    cmd.current_dir(repo_root)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     let output = match wait_with_timeout(cmd, Duration::from_secs(timeout_secs)) {
         Ok(Some(out)) => out,
