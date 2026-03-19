@@ -1,6 +1,7 @@
 use crate::config::CrucibleConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -82,7 +83,7 @@ fn run_untangle_tools(repo_root: &Path, program: &str, timeout_secs: u64) -> Vec
             status: PrecheckStatus::Warn,
             summary: "Skipped: gate.untangle_bin points to crucible; set it to untangle binary"
                 .to_string(),
-            command: "crucible analyze . --format json --quiet".to_string(),
+            command: "crucible analyze report . --format json --quiet".to_string(),
         }];
     }
     // Verified against `untangle --help`: both analyze and quality require a nested subcommand.
@@ -152,7 +153,11 @@ fn run_tool(
             excerpt = String::from_utf8_lossy(&output.stdout).trim().to_string();
         }
         if excerpt.len() > 300 {
-            excerpt.truncate(300);
+            let end = (0..=300)
+                .rev()
+                .find(|&idx| excerpt.is_char_boundary(idx))
+                .unwrap_or(0);
+            excerpt.truncate(end);
             excerpt.push('…');
         }
         PrecheckSignal {
@@ -173,16 +178,46 @@ fn wait_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Option<std::
     use std::time::Instant;
 
     let mut child = cmd.spawn()?;
+    let stdout_handle = child.stdout.take().map(spawn_reader);
+    let stderr_handle = child.stderr.take().map(spawn_reader);
     let start = Instant::now();
     loop {
-        if let Some(_status) = child.try_wait()? {
-            return Ok(Some(child.wait_with_output()?));
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(std::process::Output {
+                status,
+                stdout: join_reader(stdout_handle)?,
+                stderr: join_reader(stderr_handle)?,
+            }));
         }
         if start.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = join_reader(stdout_handle);
+            let _ = join_reader(stderr_handle);
             return Ok(None);
         }
         thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn spawn_reader<T>(mut stream: T) -> std::thread::JoinHandle<Vec<u8>>
+where
+    T: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stream.read_to_end(&mut buf);
+        buf
+    })
+}
+
+fn join_reader(
+    handle: Option<std::thread::JoinHandle<Vec<u8>>>,
+) -> Result<Vec<u8>> {
+    match handle {
+        Some(handle) => handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("reader thread panicked")),
+        None => Ok(Vec::new()),
     }
 }
