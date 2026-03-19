@@ -6,6 +6,12 @@ docs-serve:
 docs-build:
   exec mdbook build docs
 
+mutants:
+  exec cargo mutants --workspace
+
+mutants-fast:
+  exec cargo mutants --workspace --package libcrucible --file 'crates/libcrucible/src/*.rs' --file 'crates/libcrucible/src/**/*.rs'
+
 crucible-pre-push:
   if [[ -z "$(git status --porcelain --untracked-files=all)" ]]; then
     echo "crucible: no local diff detected; skipping review"

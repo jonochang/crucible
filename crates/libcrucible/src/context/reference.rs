@@ -167,6 +167,7 @@ fn overlaps_any(node: Node, ranges: &[LineRange]) -> bool {
 
 fn symbol_name(node: &Node, source: &str) -> Option<String> {
     node.child_by_field_name("name")
+        .or_else(|| node.child_by_field_name("type"))
         .and_then(|n| n.utf8_text(source.as_bytes()).ok())
         .map(|s| s.to_string())
 }
@@ -243,9 +244,15 @@ fn directory_distance(a: &Path, b: &Path) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{Symbol, SymbolKind, compare_reference_paths, directory_distance};
+    use super::{
+        Symbol, SymbolKind, compare_reference_paths, directory_distance, extract_symbols,
+        parse_diff_ranges, parse_hunk_range, reference_rank,
+    };
+    use anyhow::Result;
     use std::cmp::Ordering;
+    use std::fs;
     use std::path::{Path, PathBuf};
+    use tempfile::tempdir;
 
     #[test]
     fn directory_distance_prefers_nearby_files() {
@@ -284,5 +291,112 @@ mod tests {
             ),
             Ordering::Less
         );
+    }
+
+    #[test]
+    fn parse_hunk_range_handles_multi_line_and_zero_length_hunks() {
+        let multi = parse_hunk_range("@@ -3,1 +10,4 @@").expect("multi-line hunk");
+        assert_eq!(multi.start, 10);
+        assert_eq!(multi.end, 13);
+
+        let zero = parse_hunk_range("@@ -3,1 +8,0 @@").expect("zero-length hunk");
+        assert_eq!(zero.start, 8);
+        assert_eq!(zero.end, 8);
+    }
+
+    #[test]
+    fn parse_diff_ranges_groups_hunks_by_file() {
+        let diff = concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "--- a/src/lib.rs\n",
+            "+++ b/src/lib.rs\n",
+            "@@ -1,1 +5,2 @@\n",
+            "@@ -10,2 +20,1 @@\n",
+            "diff --git a/src/other.rs b/src/other.rs\n",
+            "--- a/src/other.rs\n",
+            "+++ b/src/other.rs\n",
+            "@@ -1,1 +2,3 @@\n",
+        );
+
+        let ranges = parse_diff_ranges(diff);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[Path::new("src/lib.rs")].len(), 2);
+        assert_eq!(ranges[Path::new("src/lib.rs")][0].start, 5);
+        assert_eq!(ranges[Path::new("src/lib.rs")][0].end, 6);
+        assert_eq!(ranges[Path::new("src/lib.rs")][1].start, 20);
+        assert_eq!(ranges[Path::new("src/lib.rs")][1].end, 20);
+        assert_eq!(ranges[Path::new("src/other.rs")][0].start, 2);
+        assert_eq!(ranges[Path::new("src/other.rs")][0].end, 4);
+    }
+
+    #[test]
+    fn reference_rank_prefers_same_file_then_name_overlap() {
+        let symbols = vec![Symbol {
+            name: "widget".to_string(),
+            kind: SymbolKind::Struct,
+            file: PathBuf::from("src/widget.rs"),
+        }];
+
+        assert_eq!(
+            reference_rank(Path::new("src/widget.rs"), &symbols),
+            (0, 0, usize::MAX - 1, "src/widget.rs".to_string())
+        );
+        assert_eq!(
+            reference_rank(Path::new("src/other.rs"), &symbols),
+            (1, 0, usize::MAX, "src/other.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_symbols_finds_all_supported_rust_item_kinds() -> Result<()> {
+        let dir = tempdir()?;
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir)?;
+        fs::write(
+            src_dir.join("lib.rs"),
+            concat!(
+                "fn top() {}\n",
+                "struct Widget;\n",
+                "trait Service {}\n",
+                "impl Widget { fn new() -> Self { Widget } }\n",
+                "const FLAG: bool = true;\n",
+            ),
+        )?;
+
+        let diff = concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "--- a/src/lib.rs\n",
+            "+++ b/src/lib.rs\n",
+            "@@ -0,0 +1,5 @@\n",
+            "+fn top() {}\n",
+            "+struct Widget;\n",
+            "+trait Service {}\n",
+            "+impl Widget { fn new() -> Self { Widget } }\n",
+            "+const FLAG: bool = true;\n",
+        );
+
+        let symbols = extract_symbols(diff, dir.path())?;
+        assert!(symbols.iter().any(|s| matches!(s.kind, SymbolKind::Function) && s.name == "top"));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| matches!(s.kind, SymbolKind::Struct) && s.name == "Widget")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| matches!(s.kind, SymbolKind::Trait) && s.name == "Service")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| matches!(s.kind, SymbolKind::Impl) && s.name == "Widget")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| matches!(s.kind, SymbolKind::Constant) && s.name == "FLAG")
+        );
+        Ok(())
     }
 }

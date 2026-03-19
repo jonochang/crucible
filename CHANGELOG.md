@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.26 - 2026-03-20
+
+- Added a generic task-pack consensus engine, built-in `requirements-review`, `design-review`, and `test-plan-review` packs, plus `crucible consensus run|reply|packs`.
+- Changed `crucible review` to use the standard built-in `review` pack for analyzer/reviewer/judge prompt definitions while preserving the existing review report pipeline.
+- Added persisted consensus sessions under `.crucible/sessions/<id>/` and CLI session list/resume/delete support.
+- Added BDD coverage for built-in consensus packs, custom task-pack loading from explicit paths, and saved-session reply flows.
+- Fixed review prechecks to use the current `untangle analyze report` / `untangle quality report` commands, pipe subprocess output cleanly, and avoid pipe-buffer deadlocks while capturing tool output.
+- Added new `reference.rs` and `pr_review.rs` unit coverage, mutation-testing `Justfile` targets, and updated the Nix flake to untangle `v0.5.4` plus `llvm-tools-preview`.
+
 ## 0.1.25 - 2026-03-18
 
 - Added `opencode` support to the built-in CLI agent adapter, including non-interactive JSON invocation defaults and response parsing.

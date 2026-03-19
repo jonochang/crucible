@@ -15,14 +15,14 @@
         };
         untanglePkg = pkgs.rustPlatform.buildRustPackage {
           pname = "untangle";
-          version = "0.3.0";
+          version = "0.5.4";
           src = pkgs.fetchFromGitHub {
             owner = "jonochang";
             repo = "untangle";
-            rev = "v0.3.0";
-            hash = "sha256-zHhk6f50bjiRi0PnY3YWcVvlzhj8q1NLroPxDVYOP7o=";
+            rev = "v0.5.4";
+            hash = "sha256-W8isoQgO7ZExemnNNxXfdb4GGUJ6mWJ4LMPXxWnbKRk=";
           };
-          cargoHash = "sha256-5ktLAOiQJkreKVlnsEOGXF8Amrhc56BAYod4ziFVQYc=";
+          cargoHash = "sha256-NmbYb9gcjvTsDeOImbYzNwJB+NhL3fW+HiABqy/G1c8=";
           nativeBuildInputs = [ pkgs.pkg-config pkgs.cmake ];
           buildInputs = [ pkgs.openssl pkgs.libgit2 pkgs.zlib ];
           OPENSSL_NO_VENDOR = "1";
@@ -30,7 +30,7 @@
           doCheck = false;
         };
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "clippy" "rustfmt" "rust-src" ];
+          extensions = [ "clippy" "rustfmt" "rust-src" "llvm-tools-preview" ];
         };
       in {
         packages.default = pkgs.callPackage ./package.nix { };

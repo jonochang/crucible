@@ -258,4 +258,63 @@ mod tests {
         assert!(draft.inline_comments.is_empty());
         assert_eq!(draft.overview_only_comments.len(), 1);
     }
+
+    #[test]
+    fn maps_deleted_lines_to_left_side_comment_with_range_metadata() {
+        let diff =
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1 @@\n-old_one\n-old_two\n kept\n";
+        let issue = CanonicalIssue {
+            severity: Severity::Warning,
+            category: "maintainability".to_string(),
+            file: Some(PathBuf::from("src/lib.rs")),
+            line_start: Some(1),
+            line_end: Some(2),
+            title: "Issue".to_string(),
+            description: "Desc".to_string(),
+            suggested_fix: None,
+            raised_by: vec!["codex".to_string()],
+            evidence: Vec::new(),
+        };
+
+        let draft = build_review_draft("summary".to_string(), &[issue], diff);
+        assert_eq!(draft.inline_comments.len(), 1);
+        let comment = &draft.inline_comments[0];
+        assert_eq!(comment.side, Some(PullRequestCommentSide::Left));
+        assert_eq!(comment.line, Some(2));
+        assert_eq!(comment.start_line, Some(1));
+        assert_eq!(comment.start_side, Some(PullRequestCommentSide::Left));
+    }
+
+    #[test]
+    fn maps_added_line_ranges_to_right_side_comment_with_range_metadata() {
+        let diff =
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1,3 @@\n kept\n+new_one\n+new_two\n";
+        let issue = CanonicalIssue {
+            severity: Severity::Warning,
+            category: "maintainability".to_string(),
+            file: Some(PathBuf::from("src/lib.rs")),
+            line_start: Some(2),
+            line_end: Some(3),
+            title: "Issue".to_string(),
+            description: "Desc".to_string(),
+            suggested_fix: Some("Apply the fix".to_string()),
+            raised_by: vec!["codex".to_string()],
+            evidence: Vec::new(),
+        };
+
+        let draft = build_review_draft("summary".to_string(), &[issue], diff);
+        assert_eq!(draft.inline_comments.len(), 1);
+        let comment = &draft.inline_comments[0];
+        assert_eq!(comment.side, Some(PullRequestCommentSide::Right));
+        assert_eq!(comment.line, Some(3));
+        assert_eq!(comment.start_line, Some(2));
+        assert_eq!(comment.start_side, Some(PullRequestCommentSide::Right));
+        assert!(comment.body.contains("Suggested fix: Apply the fix"));
+    }
+
+    #[test]
+    fn parse_hunk_start_trims_diff_prefix_and_length_suffix() {
+        assert_eq!(parse_hunk_start("-12,3"), Some(12));
+        assert_eq!(parse_hunk_start("+7"), Some(7));
+    }
 }
