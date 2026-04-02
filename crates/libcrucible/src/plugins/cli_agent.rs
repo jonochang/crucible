@@ -260,8 +260,9 @@ impl CliAgentPlugin {
             .as_ref()
             .map(|f| serde_json::to_string(f).unwrap_or_default())
             .unwrap_or_else(|| "null".to_string());
-        let references = serde_json::to_string(&ctx.gathered.references).unwrap_or_default();
-        let history = serde_json::to_string(&ctx.gathered.history).unwrap_or_default();
+        // Cap serialized context to avoid bloating prompts with large repos.
+        let references = truncate_json_array(&ctx.gathered.references, 15);
+        let history = truncate_json_array(&ctx.gathered.history, 10);
         let prechecks = serde_json::to_string(&ctx.gathered.prechecks).unwrap_or_default();
         (focus, references, history, prechecks)
     }
@@ -303,7 +304,7 @@ impl CliAgentPlugin {
         round: u8,
         synthesis: &crate::coordinator::CrossPollinationSynthesis,
     ) -> (String, String) {
-        let (focus, references, history, prechecks) = self.build_context_sections(ctx);
+        let (focus, _, _, _) = self.build_context_sections(ctx);
         let role_focus = reviewer_focus_for_agent(&self.id);
         let pack_title = ctx
             .review_pack
@@ -326,9 +327,16 @@ impl CliAgentPlugin {
             {{\n  \"narrative\": \"<concise agreement/disagreement summary>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"category\": \"<correctness|security|performance|maintainability|testing|style>\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"title\": \"<short issue title>\",\n    \"description\": \"<detailed issue description>\",\n    \"message\": \"<concise actionable issue>\",\n    \"suggested_fix\": \"<recommended fix or null>\",\n    \"evidence\": [{{\"location\":\"<path:line>\",\"quote\":\"<short code excerpt>\"}}],\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
             self.persona, round, pack_title, reviewer_prompt, role_focus
         );
+        // Omit the full diff in round-N: agents already reviewed it in round 1.
+        // Include only a compact summary of changed files to anchor discussion.
+        let changed_files_summary = ctx.diff.lines()
+            .filter(|l| l.starts_with("diff --git "))
+            .take(30)
+            .collect::<Vec<_>>()
+            .join("\n");
         let user = format!(
-            "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nDiff to review:\n{}",
-            round, synthesis.summary, focus, references, history, prechecks, ctx.diff
+            "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n\nChanged files (for reference; full diff was provided in round 1):\n{}",
+            round, synthesis.summary, focus, changed_files_summary
         );
         (system, user)
     }
@@ -445,6 +453,16 @@ fn parse_json_from_mixed<T: for<'de> Deserialize<'de>>(input: &str) -> Option<T>
         last = Some(parsed);
     }
     last
+}
+
+fn truncate_json_array<T: serde::Serialize>(items: &[T], max_items: usize) -> String {
+    if items.len() <= max_items {
+        return serde_json::to_string(items).unwrap_or_default();
+    }
+    let capped: Vec<&T> = items.iter().take(max_items).collect();
+    let mut out = serde_json::to_string(&capped).unwrap_or_default();
+    out.push_str(&format!(" /* {} of {} shown */", max_items, items.len()));
+    out
 }
 
 fn truncate(input: &str, max: usize) -> String {
@@ -747,9 +765,14 @@ impl AgentPlugin for CliAgentPlugin {
             "You are a senior engineer producing an auto-fix for agreed findings.\n{}\nRespond ONLY with valid JSON: {{ \"unified_diff\": \"...\", \"explanation\": \"...\" }}",
             judge_prompt
         );
+        // Only send Warning+ findings to auto-fix — Info findings don't need patches.
+        let actionable: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.severity >= Severity::Warning)
+            .collect();
         let user = format!(
             "Findings:\n{}\n\nDiff:\n{}",
-            serde_json::to_string(findings).unwrap_or_default(),
+            serde_json::to_string(&actionable).unwrap_or_default(),
             ctx.diff
         );
         let resp: AutoFixResponse = self.run_cli(system, user)?;
@@ -774,10 +797,11 @@ impl AgentPlugin for CliAgentPlugin {
             "You are a strict convergence judge for multi-agent code review.\n{}\nRespond ONLY with valid JSON: {{\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}}.\nUse CONVERGED only when there are no unresolved material disagreements and no net-new high-severity risk requiring another round.",
             judge_prompt
         );
+        // Omit the diff from convergence judgment — the judge only needs
+        // the findings to decide whether agents have reached consensus.
         let user = format!(
-            "Round: {round}\nFindings so far:\n{}\n\nDiff:\n{}",
-            serde_json::to_string(findings).unwrap_or_default(),
-            ctx.diff
+            "Round: {round}\nFindings so far:\n{}",
+            serde_json::to_string(findings).unwrap_or_default()
         );
         let resp: ConvergenceResponse = self.run_cli(system, user)?;
         let verdict = match resp.verdict.as_str() {

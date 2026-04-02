@@ -263,6 +263,23 @@ impl Coordinator {
                 .iter()
                 .filter(|f| f.severity == Severity::Critical)
                 .count();
+            // Early-exit: skip convergence judge + further rounds when
+            // round 1 produced zero findings — nothing to debate.
+            if current_count == 0 && round < total_rounds {
+                self.emit(ProgressEvent::ConvergenceJudgment {
+                    round,
+                    verdict: ConvergenceVerdict::Converged,
+                    rationale: "No findings to debate; skipping further rounds.".to_string(),
+                });
+                self.emit(ProgressEvent::RoundComplete {
+                    round,
+                    total_rounds,
+                });
+                self.emit(ProgressEvent::PhaseDone {
+                    phase: format!("round-{round}"),
+                });
+                break;
+            }
             if total_rounds > 1 && round < total_rounds {
                 let judge_decision = self
                     .run_with_timeout(
@@ -319,7 +336,10 @@ impl Coordinator {
         }
         let findings = self.consensus.all_findings();
         let mut issues = build_canonical_issues(&findings);
-        if self.cfg.coordinator.enable_structurizer {
+        // Skip the LLM structurizer call when there are few findings —
+        // deduplication adds little value and the heuristic builder is sufficient.
+        let structurizer_threshold = 4;
+        if self.cfg.coordinator.enable_structurizer && findings.len() >= structurizer_threshold {
             if let Ok(structured) = self
                 .run_with_timeout(
                     self.registry
