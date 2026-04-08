@@ -26,6 +26,7 @@ pub struct CliAgentPlugin {
     persona: String,
     command: String,
     args: Vec<String>,
+    reviewer_focus: Option<String>,
 }
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
@@ -62,6 +63,7 @@ impl CliAgentPlugin {
             persona: cfg.persona.clone(),
             command: cfg.command.clone(),
             args: cfg.args.clone(),
+            reviewer_focus: cfg.reviewer_focus.clone(),
         }
     }
 
@@ -268,7 +270,10 @@ impl CliAgentPlugin {
 
     fn review_prompt_round1(&self, ctx: &AgentContext) -> (String, String) {
         let (focus, references, history, prechecks) = self.build_context_sections(ctx);
-        let role_focus = reviewer_focus_for_agent(&self.id);
+        let role_focus = self
+            .reviewer_focus
+            .as_deref()
+            .unwrap_or_else(|| reviewer_focus_fallback_for_agent(&self.id));
         let pack_title = ctx
             .review_pack
             .as_ref()
@@ -304,7 +309,10 @@ impl CliAgentPlugin {
         synthesis: &crate::coordinator::CrossPollinationSynthesis,
     ) -> (String, String) {
         let (focus, references, history, prechecks) = self.build_context_sections(ctx);
-        let role_focus = reviewer_focus_for_agent(&self.id);
+        let role_focus = self
+            .reviewer_focus
+            .as_deref()
+            .unwrap_or_else(|| reviewer_focus_fallback_for_agent(&self.id));
         let pack_title = ctx
             .review_pack
             .as_ref()
@@ -388,7 +396,7 @@ impl CliAgentPlugin {
     }
 }
 
-fn reviewer_focus_for_agent(id: &str) -> &'static str {
+fn reviewer_focus_fallback_for_agent(id: &str) -> &'static str {
     match id {
         "claude-code" => "Correctness, security, and invariants",
         "codex" => "Architecture, maintainability, and API consistency",
@@ -1094,6 +1102,7 @@ mod tests {
             persona: "Architecture Lead".to_string(),
             command: "codex".to_string(),
             args: vec![],
+            reviewer_focus: None,
         }
     }
 
@@ -1168,7 +1177,7 @@ mod tests {
     #[test]
     fn open_code_role_focus_is_specialized() {
         assert_eq!(
-            reviewer_focus_for_agent("open-code"),
+            reviewer_focus_fallback_for_agent("open-code"),
             "Baseline correctness, regressions, and test gaps"
         );
     }

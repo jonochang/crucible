@@ -54,7 +54,7 @@ crucible hook install
 
 - Rust toolchain (or `nix develop`)
 - Git repository (default review mode compares branch/worktree changes against the remote default branch when available, otherwise local changes vs `HEAD`)
-- Agent CLIs on `PATH`: `claude`, `codex`, `gemini`, `opencode`
+- Agent CLIs on `PATH`: at least one of `claude`, `codex`, `gemini`, or `opencode` (configure which agents to use in `.crucible.toml`)
 - `just` on `PATH` (for the managed pre-push hook workflow)
 
 Crucible talks to these tools via stdin/stdout. Each CLI must return strict JSON as documented below.
@@ -139,29 +139,61 @@ judge = "claude-code"
 analyzer = "claude-code"
 paths = []
 
+# Each agent is defined as a [plugins.<agent-id>] section.
+# You can define any number of agents, including multiple agents using
+# the same CLI command with different models or configurations.
+
 [plugins.claude-code]
 command = "claude"
-args = []
+args = ["-p", "--output-format", "json"]
 persona = "Security Auditor"
 role_weight = 2.0
+reviewer_focus = "Correctness, security, and invariants"
 
 [plugins.codex]
 command = "codex"
-args = []
+args = ["exec", "-", "--color", "never"]
 persona = "Architecture Lead"
 role_weight = 1.5
+reviewer_focus = "Architecture, maintainability, and API consistency"
 
 [plugins.gemini]
 command = "gemini"
-args = []
+args = ["-y", "-o", "json"]
 persona = "Performance Optimizer"
 role_weight = 1.5
+reviewer_focus = "Performance, scalability, and edge-cases"
 
 [plugins.open-code]
 command = "opencode"
 args = []
 persona = "Correctness Reviewer"
 role_weight = 1.0
+reviewer_focus = "Baseline correctness, regressions, and test gaps"
+
+# Opencode with specific provider/model configurations:
+[plugins.opencode-kimi]
+command = "opencode"
+args = ["run", "--model", "moonshot/kimi-k2-5", "--format", "json"]
+persona = "Kimi K2.5 Reviewer"
+role_weight = 1.5
+reviewer_focus = "Correctness, edge cases, and cross-cutting concerns"
+
+[plugins.opencode-glm]
+command = "opencode"
+args = ["run", "--model", "zai-coding-plan/glm-5.1", "--format", "json"]
+persona = "GLM-5.1 Reviewer"
+role_weight = 1.5
+reviewer_focus = "Deep semantic analysis and logical correctness"
+```
+
+To use opencode models as reviewers, change the `agents` list:
+
+```toml
+[plugins]
+agents = ["claude-code", "opencode-kimi", "opencode-glm"]
+judge = "claude-code"
+analyzer = "claude-code"
 ```
 
 By default Crucible picks up to 3 available reviewers from this preferred order: `claude-code`, `codex`, `gemini`, `open-code`. If `gemini` is unavailable, `open-code` is used as the third reviewer. If a selected reviewer later errors during review and a standby reviewer is available, Crucible swaps the standby in for the failed reviewer before continuing the round.

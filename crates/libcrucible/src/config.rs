@@ -1,6 +1,6 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -100,21 +100,26 @@ pub struct PluginsConfig {
     pub agents: Vec<String>,
     pub judge: String,
     pub analyzer: String,
+    #[serde(default)]
     pub paths: Vec<String>,
-    #[serde(rename = "claude-code")]
-    pub claude_code: CliPluginConfig,
-    pub codex: CliPluginConfig,
-    pub gemini: CliPluginConfig,
-    #[serde(rename = "open-code")]
-    pub open_code: CliPluginConfig,
+    #[serde(flatten)]
+    pub agent_configs: BTreeMap<String, CliPluginConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliPluginConfig {
     pub command: String,
+    #[serde(default)]
     pub args: Vec<String>,
     pub persona: String,
+    #[serde(default = "default_role_weight")]
     pub role_weight: f32,
+    #[serde(default)]
+    pub reviewer_focus: Option<String>,
+}
+
+fn default_role_weight() -> f32 {
+    1.0
 }
 
 impl Default for CrucibleConfig {
@@ -168,38 +173,102 @@ impl Default for CrucibleConfig {
                 judge: "claude-code".to_string(),
                 analyzer: "claude-code".to_string(),
                 paths: vec![],
-                claude_code: CliPluginConfig {
-                    command: "claude".to_string(),
-                    args: vec![
-                        "-p".to_string(),
-                        "--output-format".to_string(),
-                        "json".to_string(),
-                    ],
-                    persona: "Security Auditor".to_string(),
-                    role_weight: 2.0,
-                },
-                codex: CliPluginConfig {
-                    command: "codex".to_string(),
-                    args: vec![
-                        "exec".to_string(),
-                        "-".to_string(),
-                        "--color".to_string(),
-                        "never".to_string(),
-                    ],
-                    persona: "Architecture Lead".to_string(),
-                    role_weight: 1.5,
-                },
-                gemini: CliPluginConfig {
-                    command: "gemini".to_string(),
-                    args: vec!["-y".to_string(), "-o".to_string(), "json".to_string()],
-                    persona: "Performance Optimizer".to_string(),
-                    role_weight: 1.5,
-                },
-                open_code: CliPluginConfig {
-                    command: "opencode".to_string(),
-                    args: vec![],
-                    persona: "Correctness Reviewer".to_string(),
-                    role_weight: 1.0,
+                agent_configs: {
+                    let mut m = BTreeMap::new();
+                    m.insert(
+                        "claude-code".to_string(),
+                        CliPluginConfig {
+                            command: "claude".to_string(),
+                            args: vec![
+                                "-p".to_string(),
+                                "--output-format".to_string(),
+                                "json".to_string(),
+                            ],
+                            persona: "Security Auditor".to_string(),
+                            role_weight: 2.0,
+                            reviewer_focus: Some(
+                                "Correctness, security, and invariants".to_string(),
+                            ),
+                        },
+                    );
+                    m.insert(
+                        "codex".to_string(),
+                        CliPluginConfig {
+                            command: "codex".to_string(),
+                            args: vec![
+                                "exec".to_string(),
+                                "-".to_string(),
+                                "--color".to_string(),
+                                "never".to_string(),
+                            ],
+                            persona: "Architecture Lead".to_string(),
+                            role_weight: 1.5,
+                            reviewer_focus: Some(
+                                "Architecture, maintainability, and API consistency".to_string(),
+                            ),
+                        },
+                    );
+                    m.insert(
+                        "gemini".to_string(),
+                        CliPluginConfig {
+                            command: "gemini".to_string(),
+                            args: vec!["-y".to_string(), "-o".to_string(), "json".to_string()],
+                            persona: "Performance Optimizer".to_string(),
+                            role_weight: 1.5,
+                            reviewer_focus: Some(
+                                "Performance, scalability, and edge-cases".to_string(),
+                            ),
+                        },
+                    );
+                    m.insert(
+                        "open-code".to_string(),
+                        CliPluginConfig {
+                            command: "opencode".to_string(),
+                            args: vec![],
+                            persona: "Correctness Reviewer".to_string(),
+                            role_weight: 1.0,
+                            reviewer_focus: Some(
+                                "Baseline correctness, regressions, and test gaps".to_string(),
+                            ),
+                        },
+                    );
+                    m.insert(
+                        "opencode-kimi".to_string(),
+                        CliPluginConfig {
+                            command: "opencode".to_string(),
+                            args: vec![
+                                "run".to_string(),
+                                "--model".to_string(),
+                                "moonshot/kimi-k2-5".to_string(),
+                                "--format".to_string(),
+                                "json".to_string(),
+                            ],
+                            persona: "Kimi K2.5 Reviewer".to_string(),
+                            role_weight: 1.5,
+                            reviewer_focus: Some(
+                                "Correctness, edge cases, and cross-cutting concerns".to_string(),
+                            ),
+                        },
+                    );
+                    m.insert(
+                        "opencode-glm".to_string(),
+                        CliPluginConfig {
+                            command: "opencode".to_string(),
+                            args: vec![
+                                "run".to_string(),
+                                "--model".to_string(),
+                                "zai-coding-plan/glm-5.1".to_string(),
+                                "--format".to_string(),
+                                "json".to_string(),
+                            ],
+                            persona: "GLM-5.1 Reviewer".to_string(),
+                            role_weight: 1.5,
+                            reviewer_focus: Some(
+                                "Deep semantic analysis and logical correctness".to_string(),
+                            ),
+                        },
+                    );
+                    m
                 },
             },
         }
@@ -219,6 +288,12 @@ fn default_enable_structurizer() -> bool {
 }
 
 impl CrucibleConfig {
+    pub fn default_full() -> Self {
+        let mut cfg = Self::default();
+        cfg.plugins.agents = cfg.plugins.agent_configs.keys().cloned().collect();
+        cfg
+    }
+
     pub fn load() -> Result<Self> {
         let cwd = std::env::current_dir().context("get current dir")?;
         if let Some(path) = find_config_path(&cwd) {
@@ -280,13 +355,7 @@ fn expand_env(input: &str) -> Result<String> {
 
 impl PluginsConfig {
     pub fn resolve_role(&self, id: &str) -> Option<&CliPluginConfig> {
-        match id {
-            "claude-code" => Some(&self.claude_code),
-            "codex" => Some(&self.codex),
-            "gemini" => Some(&self.gemini),
-            "open-code" => Some(&self.open_code),
-            _ => None,
-        }
+        self.agent_configs.get(id)
     }
 }
 

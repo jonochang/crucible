@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.27 - 2026-04-08
+
+- Replaced hardcoded agent fields in `PluginsConfig` with a dynamic `BTreeMap` using `serde(flatten)`, allowing any number of named agents via `[plugins.<agent-id>]` TOML sections.
+- Added configurable `reviewer_focus` per agent so each reviewer's focus area is set from config.
+- Added default agent configs for `opencode-kimi` (Kimi K2.5 via `moonshot/kimi-k2-5`) and `opencode-glm` (GLM-5.1 via `zai-coding-plan/glm-5.1`).
+- Added `crucible config init --full` to include all configured agents in the review list.
+- Added `crucible config init --global` to write config to `~/.config/crucible/config.toml`.
+
 ## 0.1.26 - 2026-03-20
 
 - Added a generic task-pack consensus engine, built-in `requirements-review`, `design-review`, and `test-plan-review` packs, plus `crucible consensus run|reply|packs`.
