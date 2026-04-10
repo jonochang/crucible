@@ -339,9 +339,15 @@ impl CliAgentPlugin {
             {{\n  \"narrative\": \"<concise agreement/disagreement summary>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"category\": \"<correctness|security|performance|maintainability|testing|style>\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"title\": \"<short issue title>\",\n    \"description\": \"<detailed issue description>\",\n    \"message\": \"<concise actionable issue>\",\n    \"suggested_fix\": \"<recommended fix or null>\",\n    \"evidence\": [{{\"location\":\"<path:line>\",\"quote\":\"<short code excerpt>\"}}],\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
             self.persona, round_label, round, pack_title, reviewer_prompt, role_focus
         );
+        // Omit the full diff in round-N: agents already reviewed it in round 1.
+        // Include a compact summary of all changed files to anchor discussion.
+        let changed_files_summary = ctx.diff.lines()
+            .filter(|l| l.starts_with("diff --git "))
+            .collect::<Vec<_>>()
+            .join("\n");
         let user = format!(
-            "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nDiff to review:\n{}",
-            round, synthesis.summary, focus, references, history, prechecks, ctx.diff
+            "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nChanged files (for reference; full diff was provided in round 1):\n{}",
+            round, synthesis.summary, focus, references, history, prechecks, changed_files_summary
         );
         (system, user)
     }

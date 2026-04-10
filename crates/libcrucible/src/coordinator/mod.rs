@@ -261,7 +261,27 @@ impl Coordinator {
                 .iter()
                 .filter(|f| f.severity == Severity::Critical)
                 .count();
-            if total_rounds > 1 && usize::from(round) < total_rounds {
+            let round_completed_cleanly = statuses
+                .iter()
+                .all(|status| status.state == ReviewerState::Done);
+            // Early-exit: skip convergence judge + further rounds when
+            // round 1 produced zero findings and all reviewers completed cleanly.
+            if current_count == 0 && round < total_rounds && round_completed_cleanly {
+                self.emit(ProgressEvent::ConvergenceJudgment {
+                    round,
+                    verdict: ConvergenceVerdict::Converged,
+                    rationale: "No findings to debate; skipping further rounds.".to_string(),
+                });
+                self.emit(ProgressEvent::RoundComplete {
+                    round,
+                    total_rounds: total_rounds as u8,
+                });
+                self.emit(ProgressEvent::PhaseDone {
+                    phase: format!("round-{round}"),
+                });
+                break;
+            }
+            if total_rounds > 1 && round < total_rounds {
                 let convergence_assignment = task_plan
                     .finalization
                     .convergence
