@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.29 - 2026-04-10
+
+- Hardened token-optimization safeguards in the multi-agent review pipeline.
+- Added an early exit for clean zero-finding rounds to skip unnecessary convergence work and extra rounds.
+- Reduced round-N prompt size by replacing the repeated full diff with a changed-files summary while preserving review context.
+
 ## 0.1.28 - 2026-04-10
 
 - Reworked Crucible around task-pack-defined roles and declarative rounds, decoupling execution plugins from reviewer personas and focus areas.
