@@ -318,37 +318,125 @@ paths = []
 
 [plugins]
 agents = ["claude-code"]
-judge = "claude-code"
-analyzer = "claude-code"
 paths = []
 
 [plugins.claude-code]
 command = "{mock}"
 args = []
-persona = "Mock Consensus Reviewer"
-role_weight = 1.0
 
 [plugins.codex]
 command = "{mock}"
 args = []
-persona = "Mock Consensus Reviewer"
-role_weight = 1.0
 
 [plugins.gemini]
 command = "{mock}"
 args = []
-persona = "Mock Consensus Reviewer"
-role_weight = 1.0
 
 [plugins.open-code]
 command = "{mock}"
 args = []
-persona = "Mock Consensus Reviewer"
-role_weight = 1.0
 "#,
         mock = mock_path.display()
     );
     std::fs::write(root.join(".crucible.toml"), config).expect("write consensus config");
+}
+
+fn write_role_capturing_consensus_mock_config(world: &mut CliWorld) {
+    let root = workspace_dir(world);
+    let mock_path = root.join("mock-consensus-agent.sh");
+    let capture_path = root.join("captured-consensus-prompts.txt");
+    let script = format!(
+        r##"#!/usr/bin/env sh
+printf '\n---PROMPT---\n' >> "{capture}"
+cat >> "{capture}"
+cat <<'JSON'
+{{
+  "summary":"Mock analysis summary",
+  "focus_items":[{{"area":"Mock","rationale":"Mock rationale"}}],
+  "trade_offs":["none"],
+  "affected_modules":["docs"],
+  "call_chain":[],
+  "design_patterns":[],
+  "reviewer_checklist":["Check ambiguities"],
+  "narrative":"Mock consensus narrative",
+  "items":[
+    {{
+      "kind":"risk",
+      "importance":"medium",
+      "title":"Mock consensus item",
+      "message":"Need clearer acceptance criteria",
+      "confidence":"Low",
+      "anchors":[{{"attachment_id":"inline-1","quote":"sample"}}]
+    }}
+  ],
+  "summary_markdown":"# Mock Consensus\n\n- Need clearer acceptance criteria\n",
+  "result":{{
+    "custom_answers":["Mock custom answer"]
+  }},
+  "clarification_requests":["What environment constraints apply?"],
+  "verdict":"NOT_CONVERGED",
+  "rationale":"Continue to the next round"
+}}
+JSON
+"##,
+        capture = capture_path.display()
+    );
+    std::fs::write(&mock_path, script).expect("write consensus mock agent");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&mock_path)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&mock_path, perms).expect("set permissions");
+    }
+
+    let config = format!(
+        r#"[crucible]
+version = "1"
+
+[gate]
+enabled = true
+untangle_bin = "untangle"
+
+[context]
+reference_max_depth = 2
+reference_max_files = 30
+history_max_commits = 20
+history_max_days = 30
+docs_patterns = ["docs/**/*.md", "README.md", "ARCHITECTURE.md"]
+docs_max_bytes = 50000
+
+[coordinator]
+max_rounds = 3
+quorum_threshold = 0.75
+agent_timeout_secs = 30
+devil_advocate = false
+
+[verdict]
+block_on = "Critical"
+
+[rate_limits]
+anthropic_rpm = 50
+google_rpm = 60
+openai_rpm = 60
+
+[task_packs]
+paths = []
+
+[plugins]
+agents = ["claude-code"]
+paths = []
+
+[plugins.claude-code]
+command = "{mock}"
+args = []
+"#,
+        mock = mock_path.display()
+    );
+    std::fs::write(root.join(".crucible.toml"), config).expect("write consensus config");
+    world.prompt_capture_path = Some(capture_path);
 }
 
 fn write_custom_consensus_task_pack(world: &mut CliWorld) {
@@ -364,9 +452,81 @@ title = "Custom Review"
 description = "A custom test pack"
 allowed_attachment_kinds = ["text"]
 context_providers = ["prompt_only"]
-rounds = 1
+[[roles]]
+id = "custom-reviewer"
+name = "Custom Reviewer"
+persona = "Custom Reviewer"
+focus = "Review the custom task"
+prompt_template = "discover"
+
+[[rounds]]
+name = "Initial Review"
+mode = "discover"
+assignments = [{ role = "custom-reviewer", plugin = "claude-code" }]
+
 quorum = 1.0
 allow_clarifications = true
+
+[finalization]
+judge = { role = "custom-reviewer", plugin = "claude-code" }
+"#,
+    )
+    .expect("write custom pack manifest");
+    std::fs::write(pack_dir.join("reviewer.md"), "Review the custom task.").expect("reviewer");
+    std::fs::write(pack_dir.join("judge.md"), "Summarize the custom task.").expect("judge");
+    std::fs::write(pack_dir.join("schema.json"), r#"{"type":"object"}"#).expect("schema");
+    world.custom_task_path = Some(custom_root);
+}
+
+fn write_multi_round_role_driven_consensus_task_pack(world: &mut CliWorld) {
+    let root = workspace_dir(world);
+    let custom_root = root.join("custom-task-packs");
+    let pack_dir = custom_root.join("custom-review");
+    std::fs::create_dir_all(&pack_dir).expect("create custom pack dir");
+    std::fs::write(
+        pack_dir.join("pack.toml"),
+        r#"id = "custom-review"
+version = "1"
+title = "Custom Review"
+description = "A custom multi-round role-driven pack"
+allowed_attachment_kinds = ["text"]
+context_providers = ["prompt_only"]
+quorum = 1.0
+allow_clarifications = true
+
+[[roles]]
+id = "requirements-lens"
+name = "Requirements Lens"
+persona = "Requirements Lens Reviewer"
+focus = "Look for ambiguity and missing requirements detail"
+prompt_template = "discover"
+
+[[roles]]
+id = "contrarian-lens"
+name = "Contrarian Lens"
+persona = "Contrarian Reviewer"
+focus = "Challenge assumptions and call out what prior reviewers missed"
+prompt_template = "challenge"
+
+[[roles]]
+id = "judge-lens"
+name = "Judge Lens"
+persona = "Consensus Judge"
+focus = "Produce the final canonical summary"
+prompt_template = "judge"
+
+[[rounds]]
+name = "Initial Review"
+mode = "discover"
+assignments = [{ role = "requirements-lens", plugin = "claude-code" }]
+
+[[rounds]]
+name = "Challenge Review"
+mode = "challenge"
+assignments = [{ role = "contrarian-lens", plugin = "claude-code" }]
+
+[finalization]
+judge = { role = "judge-lens", plugin = "claude-code" }
 "#,
     )
     .expect("write custom pack manifest");
@@ -454,33 +614,23 @@ openai_rpm = 60
 
 [plugins]
 agents = ["claude-code"]
-judge = "claude-code"
-analyzer = "claude-code"
 paths = []
 
 [plugins.claude-code]
 command = "{mock}"
 args = []
-persona = "Mock Reviewer"
-role_weight = 1.0
 
 [plugins.codex]
 command = "{mock}"
 args = []
-persona = "Mock Reviewer"
-role_weight = 1.0
 
 [plugins.gemini]
 command = "{mock}"
 args = []
-persona = "Mock Reviewer"
-role_weight = 1.0
 
 [plugins.open-code]
 command = "{mock}"
 args = []
-persona = "Mock Reviewer"
-role_weight = 1.0
 "#,
         mock = mock_path.display()
     );
@@ -588,33 +738,23 @@ openai_rpm = 60
 
 [plugins]
 agents = ["claude-code", "codex", "gemini"]
-judge = "claude-code"
-analyzer = "claude-code"
 paths = []
 
 [plugins.claude-code]
 command = "claude"
 args = ["-p", "--output-format", "json"]
-persona = "Security Auditor"
-role_weight = 2.0
 
 [plugins.codex]
 command = "codex"
 args = ["exec", "-", "--color", "never"]
-persona = "Architecture Lead"
-role_weight = 1.5
 
 [plugins.gemini]
 command = "gemini"
 args = ["-y", "-o", "json"]
-persona = "Performance Optimizer"
-role_weight = 1.5
 
 [plugins.open-code]
 command = "opencode"
 args = []
-persona = "Correctness Reviewer"
-role_weight = 1.0
 "#;
     std::fs::write(repo_dir.join(".crucible.toml"), config).expect("write config");
 }
@@ -778,6 +918,16 @@ fn generic_consensus_mock_crucible_config(world: &mut CliWorld) {
 #[given("a custom consensus task pack in an arbitrary folder")]
 fn custom_consensus_task_pack(world: &mut CliWorld) {
     write_custom_consensus_task_pack(world);
+}
+
+#[given("a role-capturing consensus mock crucible config")]
+fn role_capturing_consensus_mock_crucible_config(world: &mut CliWorld) {
+    write_role_capturing_consensus_mock_config(world);
+}
+
+#[given("a multi-round role-driven consensus task pack")]
+fn multi_round_role_driven_consensus_task_pack(world: &mut CliWorld) {
+    write_multi_round_role_driven_consensus_task_pack(world);
 }
 
 #[given("a slow mock crucible config")]
@@ -1151,6 +1301,36 @@ fn consensus_session_is_persisted(world: &mut CliWorld) {
     assert!(session_dir.join("request.json").exists(), "session request missing");
 }
 
+#[then("the captured consensus prompts include round-specific roles")]
+fn captured_consensus_prompts_include_round_specific_roles(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let capture_path = world
+        .prompt_capture_path
+        .as_ref()
+        .expect("prompt capture path available");
+    let raw = std::fs::read_to_string(capture_path).expect("read captured prompts");
+    assert!(raw.contains("Requirements Lens Reviewer"), "round-1 role persona missing");
+    assert!(raw.contains("Look for ambiguity and missing requirements detail"), "round-1 role focus missing");
+    assert!(raw.contains("Contrarian Reviewer"), "round-2 role persona missing");
+    assert!(raw.contains("Challenge assumptions and call out what prior reviewers missed"), "round-2 role focus missing");
+    assert!(raw.contains("Round: 2"), "round-2 prompt missing");
+    assert!(raw.contains("Prior consensus summary:"), "prior summary missing for round 2");
+}
+
+#[then("the captured consensus prompts include final judge role")]
+fn captured_consensus_prompts_include_final_judge_role(world: &mut CliWorld) {
+    let output = world.output.as_ref().expect("output available");
+    assert!(output.status.success(), "command failed");
+    let capture_path = world
+        .prompt_capture_path
+        .as_ref()
+        .expect("prompt capture path available");
+    let raw = std::fs::read_to_string(capture_path).expect("read captured prompts");
+    assert!(raw.contains("Produce the final canonical summary"), "judge role focus missing");
+    assert!(raw.contains("You are the final judge for a multi-agent consensus task."), "final judge prompt missing");
+}
+
 #[then("the review findings include the mock finding")]
 fn review_has_mock_finding(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("output available");
@@ -1169,7 +1349,8 @@ fn progress_output_emitted(world: &mut CliWorld) {
     assert!(stderr.contains("[progress] round:1 start"));
     assert!(stderr.contains("[progress] round:1 status"));
     assert!(stderr.contains("[progress] agent:start round=1"));
-    assert!(stderr.contains("[agent-review] round=1 id=claude-code"));
+    assert!(stderr.contains("[agent-review] round=1 id="));
+    assert!(stderr.contains("@claude-code"));
     assert!(stderr.contains("[progress] agent:done round=1"));
     assert!(stderr.contains("[progress] round:1 done"));
 }
@@ -1199,7 +1380,8 @@ fn round_status_with_durations(world: &mut CliWorld) {
     let output = world.output.as_ref().expect("output available");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[progress] round:1 status ["));
-    assert!(stderr.contains("OK claude-code"));
+    assert!(stderr.contains("OK "));
+    assert!(stderr.contains("@claude-code"));
     assert!(stderr.contains("s)"));
 }
 
@@ -1289,7 +1471,8 @@ fn github_dry_run_output_includes_inline_comments(world: &mut CliWorld) {
     assert!(stdout.contains("GitHub review dry run"));
     assert!(stdout.contains("Inline comments:"));
     assert!(stdout.contains("README.md"));
-    assert!(stdout.contains("Raised by: claude-code"));
+    assert!(stdout.contains("Raised by:"));
+    assert!(stdout.contains("@claude-code"));
 }
 
 #[then("the report includes a structured PR review draft")]

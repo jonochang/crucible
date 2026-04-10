@@ -97,8 +97,6 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
     let mut cfg = CrucibleConfig::load()?;
     if let Some(reviewer) = &args.reviewer {
         cfg.plugins.agents = vec![reviewer.clone()];
-        cfg.plugins.analyzer = reviewer.clone();
-        cfg.plugins.judge = reviewer.clone();
         if args.max_rounds.is_none() {
             cfg.coordinator.max_rounds = 1;
             cfg.coordinator.quorum_threshold = 1.0;

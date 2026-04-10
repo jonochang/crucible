@@ -9,7 +9,7 @@ use crate::progress::{ProgressEvent, TranscriptDirection};
 use crate::report::{
     AutoFix, CanonicalIssue, Confidence, EvidenceAnchor, Finding, RawFinding, Severity,
 };
-use crate::task_pack::TaskPack;
+use crate::task_pack::{PromptTemplate, TaskPack, TaskPackRole};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -26,7 +26,8 @@ pub struct CliAgentPlugin {
     persona: String,
     command: String,
     args: Vec<String>,
-    reviewer_focus: Option<String>,
+    reviewer_focus: String,
+    prompt_template: PromptTemplate,
 }
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
@@ -57,13 +58,14 @@ pub fn set_progress_sender(
 }
 
 impl CliAgentPlugin {
-    pub fn from_config(id: &str, cfg: &CliPluginConfig) -> Self {
+    pub fn from_role(id: &str, _plugin_id: &str, cfg: &CliPluginConfig, role: &TaskPackRole) -> Self {
         Self {
             id: id.to_string(),
-            persona: cfg.persona.clone(),
+            persona: role.persona.clone(),
             command: cfg.command.clone(),
             args: cfg.args.clone(),
-            reviewer_focus: cfg.reviewer_focus.clone(),
+            reviewer_focus: role.focus.clone(),
+            prompt_template: role.prompt_template.clone(),
         }
     }
 
@@ -270,10 +272,7 @@ impl CliAgentPlugin {
 
     fn review_prompt_round1(&self, ctx: &AgentContext) -> (String, String) {
         let (focus, references, history, prechecks) = self.build_context_sections(ctx);
-        let role_focus = self
-            .reviewer_focus
-            .as_deref()
-            .unwrap_or_else(|| reviewer_focus_fallback_for_agent(&self.id));
+        let role_focus = self.reviewer_focus.as_str();
         let pack_title = ctx
             .review_pack
             .as_ref()
@@ -286,14 +285,19 @@ impl CliAgentPlugin {
             .unwrap_or(
                 "You MUST review all changed files/functions and assess correctness, security, performance, error handling, edge cases, and maintainability.",
             );
+        let round_label = match self.prompt_template {
+            PromptTemplate::Verify => "verification round-1",
+            PromptTemplate::Challenge => "challenge round-1",
+            _ => "exhaustive round-1",
+        };
         let system = format!(
-            "You are a {} performing an exhaustive round-1 {}.\n\
+            "You are a {} performing a {} {}.\n\
             {}\n\
             Your primary lens is: {}.\n\
             Every finding MUST include direct evidence with exact code location and short quote snippets.\n\
             Respond ONLY with valid JSON matching this schema:\n\
             {{\n  \"narrative\": \"<concise analysis for terminal display>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"category\": \"<correctness|security|performance|maintainability|testing|style>\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"title\": \"<short issue title>\",\n    \"description\": \"<detailed issue description>\",\n    \"message\": \"<concise actionable issue>\",\n    \"suggested_fix\": \"<recommended fix or null>\",\n    \"evidence\": [{{\"location\":\"<path:line>\",\"quote\":\"<short code excerpt>\"}}],\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
-            self.persona, pack_title, reviewer_prompt, role_focus
+            self.persona, round_label, pack_title, reviewer_prompt, role_focus
         );
         let user = format!(
             "Round: 1\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nDiff to review:\n{}",
@@ -309,10 +313,7 @@ impl CliAgentPlugin {
         synthesis: &crate::coordinator::CrossPollinationSynthesis,
     ) -> (String, String) {
         let (focus, references, history, prechecks) = self.build_context_sections(ctx);
-        let role_focus = self
-            .reviewer_focus
-            .as_deref()
-            .unwrap_or_else(|| reviewer_focus_fallback_for_agent(&self.id));
+        let role_focus = self.reviewer_focus.as_str();
         let pack_title = ctx
             .review_pack
             .as_ref()
@@ -325,14 +326,18 @@ impl CliAgentPlugin {
             .unwrap_or(
                 "You MUST use only prior-round discussion below (no same-round leakage), explicitly agree/disagree with prior points, and call out missed issues if any.",
             );
+        let round_label = match self.prompt_template {
+            PromptTemplate::Verify => "verification",
+            _ => "adversarial",
+        };
         let system = format!(
-            "You are a {} performing adversarial round-{} {}.\n\
+            "You are a {} performing {} round-{} {}.\n\
             {}\n\
             Your primary lens is: {}.\n\
             Every finding MUST include direct evidence with exact code location and short quote snippets.\n\
             Respond ONLY with valid JSON matching this schema:\n\
             {{\n  \"narrative\": \"<concise agreement/disagreement summary>\",\n  \"findings\": [{{\n    \"severity\": \"Critical | Warning | Info\",\n    \"category\": \"<correctness|security|performance|maintainability|testing|style>\",\n    \"file\": \"<relative path or null>\",\n    \"line_start\": <integer or null>,\n    \"line_end\": <integer or null>,\n    \"title\": \"<short issue title>\",\n    \"description\": \"<detailed issue description>\",\n    \"message\": \"<concise actionable issue>\",\n    \"suggested_fix\": \"<recommended fix or null>\",\n    \"evidence\": [{{\"location\":\"<path:line>\",\"quote\":\"<short code excerpt>\"}}],\n    \"confidence\": \"High | Medium | Low\"\n  }}]\n}}",
-            self.persona, round, pack_title, reviewer_prompt, role_focus
+            self.persona, round_label, round, pack_title, reviewer_prompt, role_focus
         );
         let user = format!(
             "Round: {}\nPrior round reviewer discussion:\n{}\n\nReview context:\n- Suggested focus areas: {}\n- Relevant references: {}\n- Recent commit history: {}\n- Deterministic precheck signals: {}\n\nDiff to review:\n{}",
@@ -359,9 +364,14 @@ impl CliAgentPlugin {
             "You are a {} contributing to a multi-agent consensus task.\n\
              Task pack: {} - {}.\n\
              {}\n\
+             Your primary lens is: {}.\n\
              Respond ONLY with valid JSON matching this schema:\n\
              {{\"narrative\":\"<concise summary>\",\"items\":[{{\"kind\":\"risk|decision|question|recommendation|gap\",\"importance\":\"high|medium|low\",\"title\":\"<short title>\",\"message\":\"<actionable message>\",\"confidence\":\"High|Medium|Low\",\"anchors\":[{{\"attachment_id\":\"<attachment id>\",\"quote\":\"<short supporting quote>\"}}]}}]}}",
-            self.persona, pack.manifest.title, pack.manifest.description, pack.reviewer_prompt
+            self.persona,
+            pack.manifest.title,
+            pack.manifest.description,
+            pack.reviewer_prompt,
+            self.reviewer_focus
         );
         let user = format!(
             "Round: 1\nTask context:\n{}\n\nExpected final schema:\n{}\n",
@@ -382,10 +392,16 @@ impl CliAgentPlugin {
             "You are a {} contributing to round-{} of a multi-agent consensus task.\n\
              Task pack: {} - {}.\n\
              {}\n\
+             Your primary lens is: {}.\n\
              Explicitly agree or disagree with prior points, surface missed issues, and preserve unresolved disagreements.\n\
              Respond ONLY with valid JSON matching this schema:\n\
              {{\"narrative\":\"<agreement/disagreement summary>\",\"items\":[{{\"kind\":\"risk|decision|question|recommendation|gap\",\"importance\":\"high|medium|low\",\"title\":\"<short title>\",\"message\":\"<actionable message>\",\"confidence\":\"High|Medium|Low\",\"anchors\":[{{\"attachment_id\":\"<attachment id>\",\"quote\":\"<short supporting quote>\"}}]}}]}}",
-            self.persona, round, pack.manifest.title, pack.manifest.description, pack.reviewer_prompt
+            self.persona,
+            round,
+            pack.manifest.title,
+            pack.manifest.description,
+            pack.reviewer_prompt,
+            self.reviewer_focus
         );
         let user = format!(
             "Round: {round}\nPrior consensus summary:\n{prior_summary}\n\nTask context:\n{}\n\nExpected final schema:\n{}\n",
@@ -393,16 +409,6 @@ impl CliAgentPlugin {
             pack.schema_json
         );
         (system, user)
-    }
-}
-
-fn reviewer_focus_fallback_for_agent(id: &str) -> &'static str {
-    match id {
-        "claude-code" => "Correctness, security, and invariants",
-        "codex" => "Architecture, maintainability, and API consistency",
-        "gemini" => "Performance, scalability, and edge-cases",
-        "open-code" => "Baseline correctness, regressions, and test gaps",
-        _ => "General code quality",
     }
 }
 
@@ -752,8 +758,8 @@ impl AgentPlugin for CliAgentPlugin {
             .map(|pack| pack.judge_prompt.as_str())
             .unwrap_or("Produce final review consensus and auto-fix guidance for agreed findings.");
         let system = format!(
-            "You are a senior engineer producing an auto-fix for agreed findings.\n{}\nRespond ONLY with valid JSON: {{ \"unified_diff\": \"...\", \"explanation\": \"...\" }}",
-            judge_prompt
+            "You are a {} producing an auto-fix for agreed findings.\n{}\nPrimary lens: {}.\nRespond ONLY with valid JSON: {{ \"unified_diff\": \"...\", \"explanation\": \"...\" }}",
+            self.persona, judge_prompt, self.reviewer_focus
         );
         let user = format!(
             "Findings:\n{}\n\nDiff:\n{}",
@@ -779,8 +785,8 @@ impl AgentPlugin for CliAgentPlugin {
             .map(|pack| pack.judge_prompt.as_str())
             .unwrap_or("Produce final review consensus and convergence judgments for agreed findings.");
         let system = format!(
-            "You are a strict convergence judge for multi-agent code review.\n{}\nRespond ONLY with valid JSON: {{\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}}.\nUse CONVERGED only when there are no unresolved material disagreements and no net-new high-severity risk requiring another round.",
-            judge_prompt
+            "You are a strict convergence judge for multi-agent code review.\n{}\nPrimary lens: {}.\nRespond ONLY with valid JSON: {{\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}}.\nUse CONVERGED only when there are no unresolved material disagreements and no net-new high-severity risk requiring another round.",
+            judge_prompt, self.reviewer_focus
         );
         let user = format!(
             "Round: {round}\nFindings so far:\n{}\n\nDiff:\n{}",
@@ -809,8 +815,8 @@ impl AgentPlugin for CliAgentPlugin {
             .map(|pack| pack.judge_prompt.as_str())
             .unwrap_or("Produce final review consensus and canonical issues for agreed findings.");
         let system = format!(
-            "You are an issue structurizer.\n{}\nRespond ONLY with valid JSON array where each item contains: severity, category, file, line_start, line_end, title, description, suggested_fix, raised_by.",
-            judge_prompt
+            "You are an issue structurizer.\n{}\nPrimary lens: {}.\nRespond ONLY with valid JSON array where each item contains: severity, category, file, line_start, line_end, title, description, suggested_fix, raised_by.",
+            judge_prompt, self.reviewer_focus
         );
         let user = format!(
             "Normalize these findings into canonical issues (merge duplicates):\n{}",
@@ -849,9 +855,10 @@ impl AgentPlugin for CliAgentPlugin {
             "You are the final judge for a multi-agent consensus task.\n\
              Task pack: {} - {}.\n\
              {}\n\
+             Primary lens: {}.\n\
              Respond ONLY with valid JSON matching this schema:\n\
              {{\"summary_markdown\":\"<markdown summary>\",\"result\":<json object matching schema>,\"clarification_requests\":[\"<question>\"]}}",
-            pack.manifest.title, pack.manifest.description, pack.judge_prompt
+            pack.manifest.title, pack.manifest.description, pack.judge_prompt, self.reviewer_focus
         );
         let user = format!(
             "Task context:\n{}\n\nAgreed items:\n{}\n\nUnresolved items:\n{}\n\nExpected final schema:\n{}",
@@ -874,7 +881,10 @@ impl AgentPlugin for CliAgentPlugin {
         round: u8,
         items: &[ConsensusItem],
     ) -> Result<ConvergenceDecision> {
-        let system = "You are a strict convergence judge for a multi-agent consensus task.\nRespond ONLY with valid JSON: {\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}.".to_string();
+        let system = format!(
+            "You are a strict convergence judge for a multi-agent consensus task.\nPrimary lens: {}.\nRespond ONLY with valid JSON: {{\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}}.",
+            self.reviewer_focus
+        );
         let user = format!(
             "Round: {round}\nTask context:\n{}\n\nConsensus items so far:\n{}",
             self.task_context_json(ctx),
@@ -901,8 +911,8 @@ impl FocusAnalyzer for CliAgentPlugin {
             .map(|pack| pack.analyzer_prompt.as_str())
             .unwrap_or("You are a senior architect producing analyzer context for code review.");
         let system = format!(
-            "{}\nOutput ONLY valid JSON matching this schema:\n{{\n  \"summary\": \"<what changed, architecture impact, and purpose>\",\n  \"focus_items\": [{{ \"area\": \"<review area>\", \"rationale\": \"<why this needs focus>\" }}],\n  \"trade_offs\": [\"<trade-off or risk>\"],\n  \"affected_modules\": [\"<module/component impacted>\"],\n  \"call_chain\": [\"<entrypoint -> downstream path>\"],\n  \"design_patterns\": [\"<pattern used or violated>\"],\n  \"reviewer_checklist\": [\"<targeted checklist item for reviewers>\"]\n}}\nThe summary must be markdown-ready text.",
-            analyzer_prompt
+            "{}\nPrimary lens: {}.\nOutput ONLY valid JSON matching this schema:\n{{\n  \"summary\": \"<what changed, architecture impact, and purpose>\",\n  \"focus_items\": [{{ \"area\": \"<review area>\", \"rationale\": \"<why this needs focus>\" }}],\n  \"trade_offs\": [\"<trade-off or risk>\"],\n  \"affected_modules\": [\"<module/component impacted>\"],\n  \"call_chain\": [\"<entrypoint -> downstream path>\"],\n  \"design_patterns\": [\"<pattern used or violated>\"],\n  \"reviewer_checklist\": [\"<targeted checklist item for reviewers>\"]\n}}\nThe summary must be markdown-ready text.",
+            analyzer_prompt, self.reviewer_focus
         );
         let user = format!("Diff to review:\n{}", ctx.diff);
         let resp: FocusAreas = self.run_cli(system, user)?;
@@ -910,10 +920,10 @@ impl FocusAnalyzer for CliAgentPlugin {
     }
 
     async fn analyze_task_focus(&self, ctx: &TaskContext) -> Result<FocusAreas> {
-        let system = "You are a senior analyst preparing focus areas for a generic multi-agent consensus task.\n\
-Output ONLY valid JSON matching this schema:\n\
-{\n  \"summary\": \"<task summary>\",\n  \"focus_items\": [{ \"area\": \"<focus area>\", \"rationale\": \"<why it matters>\" }],\n  \"trade_offs\": [\"<trade-off or risk>\"],\n  \"affected_modules\": [\"<artifact or subsystem>\"],\n  \"call_chain\": [\"<important flow>\"],\n  \"design_patterns\": [\"<pattern or structure>\"],\n  \"reviewer_checklist\": [\"<checklist item>\"]\n}"
-            .to_string();
+        let system = format!(
+            "You are a senior analyst preparing focus areas for a generic multi-agent consensus task.\nPrimary lens: {}.\nOutput ONLY valid JSON matching this schema:\n{{\n  \"summary\": \"<task summary>\",\n  \"focus_items\": [{{ \"area\": \"<focus area>\", \"rationale\": \"<why it matters>\" }}],\n  \"trade_offs\": [\"<trade-off or risk>\"],\n  \"affected_modules\": [\"<artifact or subsystem>\"],\n  \"call_chain\": [\"<important flow>\"],\n  \"design_patterns\": [\"<pattern or structure>\"],\n  \"reviewer_checklist\": [\"<checklist item>\"]\n}}",
+            self.reviewer_focus
+        );
         let user = format!(
             "Task prompt:\n{}\n\nAttachments and context:\n{}",
             ctx.prompt,
@@ -1102,7 +1112,8 @@ mod tests {
             persona: "Architecture Lead".to_string(),
             command: "codex".to_string(),
             args: vec![],
-            reviewer_focus: None,
+            reviewer_focus: "Architecture, maintainability, and API consistency".to_string(),
+            prompt_template: PromptTemplate::Discover,
         }
     }
 
@@ -1172,14 +1183,6 @@ mod tests {
         let parsed = parse_opencode_event_stream::<FindingsResponse>(input).expect("findings");
         assert_eq!(parsed.narrative.as_deref(), Some("done"));
         assert!(parsed.findings.is_empty());
-    }
-
-    #[test]
-    fn open_code_role_focus_is_specialized() {
-        assert_eq!(
-            reviewer_focus_fallback_for_agent("open-code"),
-            "Baseline correctness, regressions, and test gaps"
-        );
     }
 
     #[test]

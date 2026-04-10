@@ -1,10 +1,11 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrucibleConfig {
     pub crucible: CrucibleSection,
     pub gate: GateConfig,
@@ -20,17 +21,20 @@ pub struct CrucibleConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrucibleSection {
     pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateConfig {
     pub enabled: bool,
     pub untangle_bin: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContextConfig {
     pub reference_max_depth: usize,
     pub reference_max_files: usize,
@@ -41,6 +45,7 @@ pub struct ContextConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoordinatorConfig {
     pub max_rounds: u8,
     pub quorum_threshold: f32,
@@ -55,11 +60,13 @@ pub struct CoordinatorConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerdictConfig {
     pub block_on: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     pub anthropic_rpm: u32,
     pub google_rpm: u32,
@@ -67,6 +74,7 @@ pub struct RateLimitConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrecheckConfig {
     pub enabled: bool,
     pub include_untangle: bool,
@@ -77,6 +85,7 @@ pub struct PrecheckConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct TaskPackConfig {
     #[serde(default)]
     pub paths: Vec<String>,
@@ -98,8 +107,6 @@ impl Default for PrecheckConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginsConfig {
     pub agents: Vec<String>,
-    pub judge: String,
-    pub analyzer: String,
     #[serde(default)]
     pub paths: Vec<String>,
     #[serde(flatten)]
@@ -107,19 +114,11 @@ pub struct PluginsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CliPluginConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
-    pub persona: String,
-    #[serde(default = "default_role_weight")]
-    pub role_weight: f32,
-    #[serde(default)]
-    pub reviewer_focus: Option<String>,
-}
-
-fn default_role_weight() -> f32 {
-    1.0
 }
 
 impl Default for CrucibleConfig {
@@ -170,8 +169,6 @@ impl Default for CrucibleConfig {
                     "gemini".to_string(),
                     "open-code".to_string(),
                 ],
-                judge: "claude-code".to_string(),
-                analyzer: "claude-code".to_string(),
                 paths: vec![],
                 agent_configs: {
                     let mut m = BTreeMap::new();
@@ -184,11 +181,6 @@ impl Default for CrucibleConfig {
                                 "--output-format".to_string(),
                                 "json".to_string(),
                             ],
-                            persona: "Security Auditor".to_string(),
-                            role_weight: 2.0,
-                            reviewer_focus: Some(
-                                "Correctness, security, and invariants".to_string(),
-                            ),
                         },
                     );
                     m.insert(
@@ -201,11 +193,6 @@ impl Default for CrucibleConfig {
                                 "--color".to_string(),
                                 "never".to_string(),
                             ],
-                            persona: "Architecture Lead".to_string(),
-                            role_weight: 1.5,
-                            reviewer_focus: Some(
-                                "Architecture, maintainability, and API consistency".to_string(),
-                            ),
                         },
                     );
                     m.insert(
@@ -213,11 +200,6 @@ impl Default for CrucibleConfig {
                         CliPluginConfig {
                             command: "gemini".to_string(),
                             args: vec!["-y".to_string(), "-o".to_string(), "json".to_string()],
-                            persona: "Performance Optimizer".to_string(),
-                            role_weight: 1.5,
-                            reviewer_focus: Some(
-                                "Performance, scalability, and edge-cases".to_string(),
-                            ),
                         },
                     );
                     m.insert(
@@ -225,11 +207,6 @@ impl Default for CrucibleConfig {
                         CliPluginConfig {
                             command: "opencode".to_string(),
                             args: vec![],
-                            persona: "Correctness Reviewer".to_string(),
-                            role_weight: 1.0,
-                            reviewer_focus: Some(
-                                "Baseline correctness, regressions, and test gaps".to_string(),
-                            ),
                         },
                     );
                     m.insert(
@@ -243,11 +220,6 @@ impl Default for CrucibleConfig {
                                 "--format".to_string(),
                                 "json".to_string(),
                             ],
-                            persona: "Kimi K2.5 Reviewer".to_string(),
-                            role_weight: 1.5,
-                            reviewer_focus: Some(
-                                "Correctness, edge cases, and cross-cutting concerns".to_string(),
-                            ),
                         },
                     );
                     m.insert(
@@ -261,11 +233,6 @@ impl Default for CrucibleConfig {
                                 "--format".to_string(),
                                 "json".to_string(),
                             ],
-                            persona: "GLM-5.1 Reviewer".to_string(),
-                            role_weight: 1.5,
-                            reviewer_focus: Some(
-                                "Deep semantic analysis and logical correctness".to_string(),
-                            ),
                         },
                     );
                     m
@@ -357,9 +324,4 @@ impl PluginsConfig {
     pub fn resolve_role(&self, id: &str) -> Option<&CliPluginConfig> {
         self.agent_configs.get(id)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerdictWeights {
-    pub severity_weights: HashMap<String, f32>,
 }

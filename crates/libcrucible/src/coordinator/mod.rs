@@ -10,7 +10,7 @@ use crate::report::{
 use anyhow::{Result, anyhow};
 use futures::future::{BoxFuture, FutureExt};
 use futures::stream::{FuturesUnordered, StreamExt};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -31,7 +31,7 @@ impl Coordinator {
         progress: Option<tokio::sync::mpsc::UnboundedSender<crate::progress::ProgressEvent>>,
         run_id: Uuid,
     ) -> Self {
-        let consensus = ConsensusTracker::new(cfg.coordinator.quorum_threshold, registry.agents.len());
+        let consensus = ConsensusTracker::new(cfg.coordinator.quorum_threshold, 1);
         Self {
             registry,
             cfg,
@@ -49,17 +49,37 @@ impl Coordinator {
     }
 
     pub async fn run(&mut self, ctx: &ReviewContext) -> Result<crate::report::ReviewReport> {
+        let review_pack = self
+            .review_pack
+            .clone()
+            .ok_or_else(|| anyhow!("review task pack not configured"))?;
+        let task_plan = self.registry.build_execution_plan(&review_pack)?;
+        let max_plan_rounds = task_plan.rounds.len().max(1);
+        let total_rounds = usize::from(self.cfg.coordinator.max_rounds.max(1)).min(max_plan_rounds);
+        let reviewers = task_plan
+            .rounds
+            .first()
+            .map(|round| {
+                round
+                    .assignments
+                    .iter()
+                    .map(|assignment| assignment.runtime_id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let consensus_agents = task_plan
+            .rounds
+            .iter()
+            .map(|round| round.assignments.len())
+            .max()
+            .unwrap_or(1);
+        self.consensus = ConsensusTracker::new(self.cfg.coordinator.quorum_threshold, consensus_agents);
         self.emit(ProgressEvent::RunHeader {
-            reviewers: self
-                .registry
-                .agents
-                .iter()
-                .map(|a| a.id().to_string())
-                .collect(),
-            max_rounds: self.cfg.coordinator.max_rounds.max(1),
+            reviewers,
+            max_rounds: total_rounds as u8,
             changed_files: ctx.changed_files.len(),
             changed_lines: count_changed_lines(&ctx.diff),
-            convergence_enabled: self.cfg.coordinator.max_rounds > 1,
+            convergence_enabled: total_rounds > 1,
             context_enabled: true,
         });
         self.emit(ProgressEvent::PhaseStart {
@@ -67,36 +87,41 @@ impl Coordinator {
         });
         self.emit(ProgressEvent::AnalyzerStart);
         let mut analyzer_ctx = ctx.into_agent_ctx(None);
-        analyzer_ctx.review_pack = self.review_pack.clone();
+        analyzer_ctx.review_pack = Some(review_pack.clone());
         let mut focus = None;
         let mut agent_failures = Vec::new();
         let analyzer_attempts: u8 = 2;
-        for attempt in 1..=analyzer_attempts {
-            match self.registry.analyzer.analyze_focus(&analyzer_ctx).await {
-                Ok(result) => {
-                    focus = Some(result);
-                    break;
-                }
-                Err(err) => {
-                    self.emit(ProgressEvent::AgentError {
-                        round: 0,
-                        id: "analyzer".to_string(),
-                        message: format!(
-                            "analyzer attempt {}/{} failed: {}",
-                            attempt, analyzer_attempts, err
-                        ),
-                    });
-                    if attempt == analyzer_attempts {
-                        agent_failures.push(AgentFailure {
-                            agent: self.cfg.plugins.analyzer.clone(),
-                            stage: "analyzer".to_string(),
-                            round: None,
-                            message: err.to_string(),
+        if let Some(analyze_assignment) = &task_plan.finalization.analyze {
+            let analyzer = self.registry.instantiate_focus_analyzer(analyze_assignment)?;
+            for attempt in 1..=analyzer_attempts {
+                match analyzer.analyze_focus(&analyzer_ctx).await {
+                    Ok(result) => {
+                        focus = Some(result);
+                        break;
+                    }
+                    Err(err) => {
+                        self.emit(ProgressEvent::AgentError {
+                            round: 0,
+                            id: analyze_assignment.runtime_id.clone(),
+                            message: format!(
+                                "analyzer attempt {}/{} failed: {}",
+                                attempt, analyzer_attempts, err
+                            ),
                         });
-                        focus = Some(fallback_focus(ctx, &err.to_string()));
+                        if attempt == analyzer_attempts {
+                            agent_failures.push(AgentFailure {
+                                agent: analyze_assignment.runtime_id.clone(),
+                                stage: "analyzer".to_string(),
+                                round: None,
+                                message: err.to_string(),
+                            });
+                            focus = Some(fallback_focus(ctx, &err.to_string()));
+                        }
                     }
                 }
             }
+        } else {
+            focus = Some(fallback_focus(ctx, "no analyzer assignment configured"));
         }
         let focus = focus.expect("analyzer focus set");
         self.emit(ProgressEvent::AnalysisReady {
@@ -110,9 +135,8 @@ impl Coordinator {
             phase: "analyzer".to_string(),
         });
 
-        let total_rounds = self.cfg.coordinator.max_rounds.max(1);
         let mut agent_ctx = ctx.into_agent_ctx(Some(&focus));
-        agent_ctx.review_pack = self.review_pack.clone();
+        agent_ctx.review_pack = Some(review_pack.clone());
         let diff_chunks = chunk_diff(
             &ctx.diff,
             self.cfg.coordinator.max_diff_lines_per_chunk,
@@ -122,23 +146,27 @@ impl Coordinator {
         let mut previous_count = 0usize;
         let mut previous_high_count = 0usize;
         let mut prior_round_findings: HashMap<String, Vec<RawFinding>> = HashMap::new();
-        let mut active_agents = self.registry.agents.clone();
-        let mut standby_agents = self.registry.standby_agents.clone();
         self.emit(ProgressEvent::PhaseStart {
             phase: "agent-preflight".to_string(),
         });
         self.emit(ProgressEvent::PhaseDone {
             phase: "agent-preflight".to_string(),
         });
-        for round in 1..=total_rounds {
+        for (round_idx, round_plan) in task_plan.rounds.iter().take(total_rounds).enumerate() {
+            let round = (round_idx + 1) as u8;
             self.snapshotter.freeze_round(round, &HashMap::new());
+            let active_agents = round_plan
+                .assignments
+                .iter()
+                .map(|assignment| self.registry.instantiate_role_agent(assignment))
+                .collect::<Result<Vec<_>>>()?;
             let agents = active_agents.iter().map(|a| a.id().to_string()).collect();
             self.emit(ProgressEvent::PhaseStart {
                 phase: format!("round-{round}"),
             });
             self.emit(ProgressEvent::RoundStart {
                 round,
-                total_rounds,
+                total_rounds: total_rounds as u8,
                 agents,
             });
 
@@ -194,36 +222,6 @@ impl Coordinator {
                             round: Some(round),
                             message: err.to_string(),
                         });
-                        if let Some(replacement) =
-                            activate_standby_agent(&mut active_agents, &mut standby_agents, &id)
-                        {
-                            replace_status_id(&mut statuses, &id, replacement.id().to_string());
-                            let replacement_id = replacement.id().to_string();
-                            self.emit(ProgressEvent::ParallelStatus {
-                                round,
-                                statuses: statuses.clone(),
-                            });
-                            dispatch_agent_for_round(
-                                &mut pending,
-                                &mut statuses,
-                                &mut started_at,
-                                round,
-                                replacement,
-                                agent_ctx.clone(),
-                                diff_chunks.clone(),
-                                prior_round_findings.clone(),
-                                self.cfg.coordinator.agent_timeout_secs,
-                                self,
-                            );
-                            self.emit(ProgressEvent::AgentTranscript {
-                                id: replacement_id,
-                                direction: crate::progress::TranscriptDirection::FromAgent,
-                                message: format!(
-                                    "activated standby reviewer after {} failed",
-                                    id
-                                ),
-                            });
-                        }
                         continue;
                     }
                 };
@@ -263,12 +261,16 @@ impl Coordinator {
                 .iter()
                 .filter(|f| f.severity == Severity::Critical)
                 .count();
-            if total_rounds > 1 && round < total_rounds {
+            if total_rounds > 1 && usize::from(round) < total_rounds {
+                let convergence_assignment = task_plan
+                    .finalization
+                    .convergence
+                    .as_ref()
+                    .unwrap_or(&task_plan.finalization.judge);
+                let convergence_judge = self.registry.instantiate_role_agent(convergence_assignment)?;
                 let judge_decision = self
                     .run_with_timeout(
-                        self.registry
-                            .judge
-                            .judge_convergence(&agent_ctx, round, &current_findings),
+                        convergence_judge.judge_convergence(&agent_ctx, round, &current_findings),
                         "judge_convergence",
                     )
                     .await;
@@ -299,7 +301,7 @@ impl Coordinator {
                 if converged {
                     self.emit(ProgressEvent::RoundComplete {
                         round,
-                        total_rounds,
+                        total_rounds: total_rounds as u8,
                     });
                     self.emit(ProgressEvent::PhaseDone {
                         phase: format!("round-{round}"),
@@ -311,7 +313,7 @@ impl Coordinator {
             previous_high_count = current_high_count;
             self.emit(ProgressEvent::RoundComplete {
                 round,
-                total_rounds,
+                total_rounds: total_rounds as u8,
             });
             self.emit(ProgressEvent::PhaseDone {
                 phase: format!("round-{round}"),
@@ -320,11 +322,15 @@ impl Coordinator {
         let findings = self.consensus.all_findings();
         let mut issues = build_canonical_issues(&findings);
         if self.cfg.coordinator.enable_structurizer {
+            let structurizer_assignment = task_plan
+                .finalization
+                .structurizer
+                .as_ref()
+                .unwrap_or(&task_plan.finalization.judge);
+            let structurizer = self.registry.instantiate_role_agent(structurizer_assignment)?;
             if let Ok(structured) = self
                 .run_with_timeout(
-                    self.registry
-                        .judge
-                        .structurize_issues(&agent_ctx, &findings),
+                    structurizer.structurize_issues(&agent_ctx, &findings),
                     "structurize_issues",
                 )
                 .await
@@ -343,8 +349,14 @@ impl Coordinator {
             phase: "finalize".to_string(),
         });
         let auto_fix = if findings.iter().any(|f| f.severity >= Severity::Warning) {
+            let autofix_assignment = task_plan
+                .finalization
+                .autofix
+                .as_ref()
+                .unwrap_or(&task_plan.finalization.judge);
+            let autofix_agent = self.registry.instantiate_role_agent(autofix_assignment)?;
             self.run_with_timeout(
-                self.registry.judge.summarize(&agent_ctx, &findings),
+                autofix_agent.summarize(&agent_ctx, &findings),
                 "final_summarize",
             )
             .await
@@ -422,28 +434,6 @@ fn update_status(
             break;
         }
     }
-}
-
-fn replace_status_id(statuses: &mut [ReviewerStatus], old_id: &str, new_id: String) {
-    for s in statuses.iter_mut() {
-        if s.id == old_id {
-            s.id = new_id;
-            s.state = ReviewerState::Queued;
-            s.duration_secs = None;
-            break;
-        }
-    }
-}
-
-fn activate_standby_agent(
-    active_agents: &mut [std::sync::Arc<dyn crate::plugin::AgentPlugin>],
-    standby_agents: &mut VecDeque<std::sync::Arc<dyn crate::plugin::AgentPlugin>>,
-    failed_id: &str,
-) -> Option<std::sync::Arc<dyn crate::plugin::AgentPlugin>> {
-    let replacement = standby_agents.pop_front()?;
-    let slot = active_agents.iter_mut().find(|agent| agent.id() == failed_id)?;
-    *slot = replacement.clone();
-    Some(replacement)
 }
 
 fn dispatch_agent_for_round(
@@ -784,16 +774,9 @@ pub fn parse_convergence_verdict(input: &str) -> Option<ConvergenceVerdict> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        activate_standby_agent, calibrate_low_confidence, chunk_diff, parse_convergence_verdict,
-    };
-    use crate::analysis::AgentContext;
-    use crate::plugin::{AgentPlugin, AgentReviewOutput, ConvergenceDecision};
+    use super::{calibrate_low_confidence, chunk_diff, parse_convergence_verdict};
     use crate::progress::ConvergenceVerdict;
-    use crate::report::{AutoFix, CanonicalIssue, Confidence, Finding, RawFinding, Severity};
-    use async_trait::async_trait;
-    use std::collections::VecDeque;
-    use std::sync::Arc;
+    use crate::report::{Confidence, Finding, Severity};
 
     #[test]
     fn parse_convergence_token() {
@@ -852,89 +835,6 @@ mod tests {
         }];
         calibrate_low_confidence(&mut findings);
         assert_eq!(findings[0].severity, Severity::Info);
-    }
-
-    struct DummyAgent(&'static str);
-
-    #[async_trait]
-    impl AgentPlugin for DummyAgent {
-        fn id(&self) -> &str {
-            self.0
-        }
-
-        fn persona(&self) -> &str {
-            "dummy"
-        }
-
-        async fn analyze(&self, _ctx: &AgentContext) -> anyhow::Result<AgentReviewOutput> {
-            Ok(AgentReviewOutput {
-                findings: Vec::<RawFinding>::new(),
-                narrative: String::new(),
-            })
-        }
-
-        async fn debate(
-            &self,
-            _ctx: &AgentContext,
-            _round: u8,
-            _synthesis: &crate::coordinator::CrossPollinationSynthesis,
-        ) -> anyhow::Result<AgentReviewOutput> {
-            self.analyze(_ctx).await
-        }
-
-        async fn summarize(
-            &self,
-            _ctx: &AgentContext,
-            _findings: &[Finding],
-        ) -> anyhow::Result<AutoFix> {
-            Ok(AutoFix {
-                unified_diff: String::new(),
-                explanation: String::new(),
-            })
-        }
-
-        async fn judge_convergence(
-            &self,
-            _ctx: &AgentContext,
-            _round: u8,
-            _findings: &[Finding],
-        ) -> anyhow::Result<ConvergenceDecision> {
-            Ok(ConvergenceDecision {
-                verdict: ConvergenceVerdict::Converged,
-                rationale: String::new(),
-            })
-        }
-
-        async fn structurize_issues(
-            &self,
-            _ctx: &AgentContext,
-            _findings: &[Finding],
-        ) -> anyhow::Result<Vec<CanonicalIssue>> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[test]
-    fn standby_agent_replaces_failed_agent_slot() {
-        let mut active_agents: Vec<Arc<dyn AgentPlugin>> = vec![
-            Arc::new(DummyAgent("claude-code")),
-            Arc::new(DummyAgent("codex")),
-            Arc::new(DummyAgent("gemini")),
-        ];
-        let mut standby_agents: VecDeque<Arc<dyn AgentPlugin>> =
-            VecDeque::from([Arc::new(DummyAgent("open-code")) as Arc<dyn AgentPlugin>]);
-
-        let replacement =
-            activate_standby_agent(&mut active_agents, &mut standby_agents, "gemini")
-                .expect("replacement");
-
-        let ids = active_agents
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(replacement.id(), "open-code");
-        assert_eq!(ids, vec!["claude-code", "codex", "open-code"]);
-        assert!(standby_agents.is_empty());
     }
 }
 

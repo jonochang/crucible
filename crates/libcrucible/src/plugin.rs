@@ -1,13 +1,13 @@
-use crate::analysis::AgentContext;
-use crate::consensus::{ConsensusAnchor, ConsensusItem, ItemImportance, TaskContext};
 use crate::analysis::FocusAreas;
+use crate::analysis::AgentContext;
 use crate::config::CrucibleConfig;
+use crate::consensus::{ConsensusAnchor, ConsensusItem, ItemImportance, TaskContext};
 use crate::progress::ConvergenceVerdict;
 use crate::report::{AutoFix, CanonicalIssue, Finding, RawFinding};
-use crate::task_pack::TaskPack;
+use crate::task_pack::{TaskAssignment, TaskPack, TaskPackRole};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::Arc;
 use which::which;
 
@@ -149,10 +149,9 @@ pub trait FocusAnalyzer: Send + Sync {
 }
 
 pub struct PluginRegistry {
-    pub agents: Vec<Arc<dyn AgentPlugin>>,
-    pub standby_agents: VecDeque<Arc<dyn AgentPlugin>>,
-    pub judge: Arc<dyn AgentPlugin>,
-    pub analyzer: Arc<dyn FocusAnalyzer>,
+    pub active_plugin_ids: Vec<String>,
+    pub standby_plugin_ids: VecDeque<String>,
+    plugin_configs: BTreeMap<String, crate::config::CliPluginConfig>,
 }
 
 impl PluginRegistry {
@@ -162,60 +161,188 @@ impl PluginRegistry {
             return Err(anyhow!("no agents configured"));
         }
 
-        let mut agents: Vec<Arc<dyn AgentPlugin>> = Vec::new();
-        for id in &resolved_agents.active {
-            let plugin_cfg = cfg
-                .plugins
-                .resolve_role(id)
-                .ok_or_else(|| anyhow!("missing config for plugin {id}"))?;
-            let plugin = crate::plugins::cli_agent::CliAgentPlugin::from_config(id, plugin_cfg);
-            agents.push(Arc::new(plugin));
-        }
-        let mut standby_agents: VecDeque<Arc<dyn AgentPlugin>> = VecDeque::new();
-        for id in &resolved_agents.standby {
-            let plugin_cfg = cfg
-                .plugins
-                .resolve_role(id)
-                .ok_or_else(|| anyhow!("missing config for plugin {id}"))?;
-            let plugin = crate::plugins::cli_agent::CliAgentPlugin::from_config(id, plugin_cfg);
-            standby_agents.push_back(Arc::new(plugin));
+        Ok(Self {
+            active_plugin_ids: resolved_agents.active,
+            standby_plugin_ids: resolved_agents.standby.into(),
+            plugin_configs: cfg.plugins.agent_configs.clone(),
+        })
+    }
+
+    pub fn build_execution_plan(&self, pack: &TaskPack) -> Result<ResolvedTaskPlan> {
+        let mut rounds = Vec::new();
+        for round in &pack.manifest.rounds {
+            let mut used_plugins = HashSet::new();
+            let mut resolved_assignments = Vec::new();
+            for assignment in &round.assignments {
+                let role = self.role_from_pack(pack, &assignment.role)?;
+                let plugin_id = self.resolve_assignment_plugin(assignment, &used_plugins)?;
+                used_plugins.insert(plugin_id.clone());
+                resolved_assignments.push(ResolvedRoleAssignment::new(
+                    role,
+                    &plugin_id,
+                    assignment.weight_override,
+                ));
+            }
+            rounds.push(ResolvedRoundPlan {
+                name: round.name.clone(),
+                mode: round.mode.clone(),
+                assignments: resolved_assignments,
+            });
         }
 
-        let fallback_role = resolved_agents
-            .active
+        let finalization = ResolvedFinalizationPlan {
+            analyze: self.resolve_optional_assignment(pack, pack.manifest.finalization.analyze.as_ref())?,
+            judge: self.resolve_required_assignment(pack, &pack.manifest.finalization.judge)?,
+            convergence: self.resolve_optional_assignment(
+                pack,
+                pack.manifest.finalization.convergence.as_ref(),
+            )?,
+            structurizer: self.resolve_optional_assignment(
+                pack,
+                pack.manifest.finalization.structurizer.as_ref(),
+            )?,
+            autofix: self.resolve_optional_assignment(pack, pack.manifest.finalization.autofix.as_ref())?,
+        };
+
+        Ok(ResolvedTaskPlan { rounds, finalization })
+    }
+
+    pub fn instantiate_role_agent(
+        &self,
+        assignment: &ResolvedRoleAssignment,
+    ) -> Result<Arc<dyn AgentPlugin>> {
+        let plugin_cfg = self
+            .plugin_configs
+            .get(&assignment.plugin_id)
+            .ok_or_else(|| anyhow!("missing config for plugin {}", assignment.plugin_id))?;
+        let plugin = crate::plugins::cli_agent::CliAgentPlugin::from_role(
+            &assignment.runtime_id,
+            &assignment.plugin_id,
+            plugin_cfg,
+            &assignment.role,
+        );
+        Ok(Arc::new(plugin))
+    }
+
+    pub fn instantiate_focus_analyzer(
+        &self,
+        assignment: &ResolvedRoleAssignment,
+    ) -> Result<Arc<dyn FocusAnalyzer>> {
+        let plugin_cfg = self
+            .plugin_configs
+            .get(&assignment.plugin_id)
+            .ok_or_else(|| anyhow!("missing config for plugin {}", assignment.plugin_id))?;
+        let plugin = crate::plugins::cli_agent::CliAgentPlugin::from_role(
+            &assignment.runtime_id,
+            &assignment.plugin_id,
+            plugin_cfg,
+            &assignment.role,
+        );
+        Ok(Arc::new(plugin))
+    }
+
+    fn resolve_required_assignment(
+        &self,
+        pack: &TaskPack,
+        assignment: &TaskAssignment,
+    ) -> Result<ResolvedRoleAssignment> {
+        let role = self.role_from_pack(pack, &assignment.role)?;
+        let plugin_id = self.resolve_assignment_plugin(assignment, &HashSet::new())?;
+        Ok(ResolvedRoleAssignment::new(
+            role,
+            &plugin_id,
+            assignment.weight_override,
+        ))
+    }
+
+    fn resolve_optional_assignment(
+        &self,
+        pack: &TaskPack,
+        assignment: Option<&TaskAssignment>,
+    ) -> Result<Option<ResolvedRoleAssignment>> {
+        assignment
+            .map(|assignment| self.resolve_required_assignment(pack, assignment))
+            .transpose()
+    }
+
+    fn role_from_pack(&self, pack: &TaskPack, role_id: &str) -> Result<TaskPackRole> {
+        pack.manifest
+            .roles
+            .iter()
+            .find(|role| role.id == role_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("task pack '{}' missing role '{}'", pack.id(), role_id))
+    }
+
+    fn resolve_assignment_plugin(
+        &self,
+        assignment: &TaskAssignment,
+        used_plugins: &HashSet<String>,
+    ) -> Result<String> {
+        let allowed = &self.active_plugin_ids;
+        if allowed.is_empty() {
+            return Err(anyhow!("no configured plugins available on PATH"));
+        }
+        if allowed.contains(&assignment.plugin) && !used_plugins.contains(&assignment.plugin) {
+            return Ok(assignment.plugin.clone());
+        }
+        if let Some(id) = allowed.iter().find(|id| !used_plugins.contains(*id)) {
+            return Ok(id.clone());
+        }
+        if allowed.contains(&assignment.plugin) {
+            return Ok(assignment.plugin.clone());
+        }
+        allowed
             .first()
             .cloned()
-            .ok_or_else(|| anyhow!("no available agents found on PATH"))?;
-        let judge_id = cfg.plugins.resolve_available_role(&cfg.plugins.judge, &fallback_role);
-        let analyzer_id = cfg
-            .plugins
-            .resolve_available_role(&cfg.plugins.analyzer, &fallback_role);
-
-        let judge_cfg = cfg
-            .plugins
-            .resolve_role(&judge_id)
-            .ok_or_else(|| anyhow!("missing config for judge"))?;
-        let analyzer_cfg = cfg
-            .plugins
-            .resolve_role(&analyzer_id)
-            .ok_or_else(|| anyhow!("missing config for analyzer"))?;
-
-        let judge = crate::plugins::cli_agent::CliAgentPlugin::from_config(&judge_id, judge_cfg);
-        let analyzer =
-            crate::plugins::cli_agent::CliAgentPlugin::from_config(&analyzer_id, analyzer_cfg);
-
-        Ok(Self {
-            agents,
-            standby_agents,
-            judge: Arc::new(judge),
-            analyzer: Arc::new(analyzer),
-        })
+            .ok_or_else(|| anyhow!("no configured plugins available on PATH"))
     }
 }
 
 pub struct ResolvedAgents {
     pub active: Vec<String>,
     pub standby: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedRoleAssignment {
+    pub runtime_id: String,
+    pub plugin_id: String,
+    pub role: TaskPackRole,
+    pub weight: f32,
+}
+
+impl ResolvedRoleAssignment {
+    fn new(role: TaskPackRole, plugin_id: &str, weight_override: Option<f32>) -> Self {
+        Self {
+            runtime_id: format!("{}@{}", role.id, plugin_id),
+            plugin_id: plugin_id.to_string(),
+            weight: weight_override.unwrap_or(role.default_weight),
+            role,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedRoundPlan {
+    pub name: String,
+    pub mode: crate::task_pack::RoundMode,
+    pub assignments: Vec<ResolvedRoleAssignment>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedFinalizationPlan {
+    pub analyze: Option<ResolvedRoleAssignment>,
+    pub judge: ResolvedRoleAssignment,
+    pub convergence: Option<ResolvedRoleAssignment>,
+    pub structurizer: Option<ResolvedRoleAssignment>,
+    pub autofix: Option<ResolvedRoleAssignment>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedTaskPlan {
+    pub rounds: Vec<ResolvedRoundPlan>,
+    pub finalization: ResolvedFinalizationPlan,
 }
 
 impl crate::config::PluginsConfig {
@@ -259,14 +386,6 @@ impl crate::config::PluginsConfig {
         }
 
         Err(anyhow!("no configured agents found on PATH"))
-    }
-
-    pub fn resolve_available_role(&self, requested: &str, fallback: &str) -> String {
-        if self.role_on_path(requested) {
-            requested.to_string()
-        } else {
-            fallback.to_string()
-        }
     }
 
     fn role_on_path(&self, id: &str) -> bool {
@@ -345,20 +464,10 @@ mod tests {
 
         let cfg = CrucibleConfig::default();
         let registry = PluginRegistry::from_config(&cfg).expect("registry");
-        let ids = registry
-            .agents
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-
+        let ids = registry.active_plugin_ids.clone();
         assert_eq!(ids, vec!["claude-code", "codex", "open-code"]);
-        let standby = registry
-            .standby_agents
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
+        let standby = registry.standby_plugin_ids.iter().cloned().collect::<Vec<_>>();
         assert!(standby.is_empty());
-        assert_eq!(registry.judge.id(), "claude-code");
     }
 
     #[test]
@@ -370,18 +479,11 @@ mod tests {
 
         let mut cfg = CrucibleConfig::default();
         cfg.plugins.agents = vec!["open-code".to_string()];
-        cfg.plugins.judge = "open-code".to_string();
-        cfg.plugins.analyzer = "open-code".to_string();
 
         let registry = PluginRegistry::from_config(&cfg).expect("registry");
-        let ids = registry
-            .agents
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
+        let ids = registry.active_plugin_ids.clone();
 
         assert_eq!(ids, vec!["open-code"]);
-        assert_eq!(registry.judge.id(), "open-code");
     }
 
     #[test]
@@ -396,16 +498,8 @@ mod tests {
 
         let cfg = CrucibleConfig::default();
         let registry = PluginRegistry::from_config(&cfg).expect("registry");
-        let ids = registry
-            .agents
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-        let standby = registry
-            .standby_agents
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
+        let ids = registry.active_plugin_ids.clone();
+        let standby = registry.standby_plugin_ids.iter().cloned().collect::<Vec<_>>();
 
         assert_eq!(ids, vec!["claude-code", "codex", "gemini"]);
         assert_eq!(standby, vec!["open-code"]);

@@ -60,8 +60,6 @@ pub async fn run(args: PromptEvalArgs) -> Result<()> {
     let mut cfg = CrucibleConfig::load()?;
     if args.fast {
         cfg.plugins.agents = vec!["codex".to_string()];
-        cfg.plugins.analyzer = "codex".to_string();
-        cfg.plugins.judge = "codex".to_string();
         cfg.coordinator.max_rounds = 1;
     }
     let raw = std::fs::read_to_string(&args.dataset)?;

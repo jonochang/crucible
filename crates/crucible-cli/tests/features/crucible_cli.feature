@@ -37,6 +37,15 @@ Feature: Crucible CLI
     When I reply to the saved consensus session as json
     Then the consensus reply includes the custom pack
 
+  Scenario: Consensus reassigns different roles across rounds
+    Given an empty temp project
+    And a role-capturing consensus mock crucible config
+    And a multi-round role-driven consensus task pack
+    When I run consensus for the custom pack from an explicit task path as json
+    Then the consensus report includes the custom pack
+    And the captured consensus prompts include round-specific roles
+    And the captured consensus prompts include final judge role
+
   Scenario: Run review with a mock agent
     Given a git repo with a diff
     And a mock crucible config

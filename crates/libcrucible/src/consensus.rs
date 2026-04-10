@@ -226,21 +226,27 @@ impl<'a> ConsensusEngine<'a> {
     }
 
     async fn run(&mut self, mut ctx: TaskContext) -> Result<ConsensusReport> {
-        ctx.analyzer_summary = self
-            .registry
-            .analyzer
-            .analyze_task_focus(&ctx)
-            .await
-            .ok()
-            .map(|focus| focus.summary);
+        let task_plan = self.registry.build_execution_plan(&self.pack)?;
+        if let Some(analyze_assignment) = &task_plan.finalization.analyze {
+            let analyzer = self.registry.instantiate_focus_analyzer(analyze_assignment)?;
+            ctx.analyzer_summary = analyzer.analyze_task_focus(&ctx).await.ok().map(|focus| focus.summary);
+        }
 
-        let total_rounds = self.pack.manifest.rounds.max(1);
-        let mut tracker = ConsensusTracker::new(self.pack.manifest.quorum, self.registry.agents.len());
+        let total_rounds = task_plan.rounds.len().max(1);
+        let agent_count = task_plan
+            .rounds
+            .iter()
+            .map(|round| round.assignments.len())
+            .max()
+            .unwrap_or(1);
+        let mut tracker = ConsensusTracker::new(self.pack.manifest.quorum, agent_count);
         let mut prior_summary = String::new();
         let mut failures = Vec::new();
 
-        for round in 1..=total_rounds {
-            for agent in &self.registry.agents {
+        for (round_idx, round_plan) in task_plan.rounds.iter().enumerate() {
+            let round = (round_idx + 1) as u8;
+            for assignment in &round_plan.assignments {
+                let agent = self.registry.instantiate_role_agent(assignment)?;
                 let output = if round == 1 {
                     agent.analyze_task(&ctx, &self.pack).await
                 } else {
@@ -258,11 +264,15 @@ impl<'a> ConsensusEngine<'a> {
             }
 
             let all_items = tracker.all_items();
-            if round < total_rounds {
+            if usize::from(round) < total_rounds {
+                let convergence_assignment = task_plan
+                    .finalization
+                    .convergence
+                    .as_ref()
+                    .unwrap_or(&task_plan.finalization.judge);
+                let convergence_judge = self.registry.instantiate_role_agent(convergence_assignment)?;
                 let decision = self
-                    .registry
-                    .judge
-                    .judge_task_convergence(&ctx, round, &all_items)
+                    .run_with_judge(&*convergence_judge, &ctx, round, &all_items)
                     .await
                     .unwrap_or(ConvergenceDecision {
                         verdict: ConvergenceVerdict::NotConverged,
@@ -277,10 +287,11 @@ impl<'a> ConsensusEngine<'a> {
 
         let all_items = tracker.all_items();
         let unresolved_items = tracker.unresolved_items();
-        let final_output = self
+        let judge = self
             .registry
-            .judge
-            .summarize_task(&ctx, &self.pack, &all_items, &unresolved_items)
+            .instantiate_role_agent(&task_plan.finalization.judge)?;
+        let final_output = self
+            .run_with_summary(&*judge, &ctx, &all_items, &unresolved_items)
             .await
             .unwrap_or_else(|_| GenericFinalOutput {
                 summary_markdown: fallback_summary(&self.pack, &all_items, &unresolved_items),
@@ -304,6 +315,28 @@ impl<'a> ConsensusEngine<'a> {
             agent_failures: failures,
             session_id: self.run_id,
         })
+    }
+
+    async fn run_with_judge(
+        &self,
+        judge: &dyn crate::plugin::AgentPlugin,
+        ctx: &TaskContext,
+        round: u8,
+        items: &[ConsensusItem],
+    ) -> Result<ConvergenceDecision> {
+        judge.judge_task_convergence(ctx, round, items).await
+    }
+
+    async fn run_with_summary(
+        &self,
+        judge: &dyn crate::plugin::AgentPlugin,
+        ctx: &TaskContext,
+        all_items: &[ConsensusItem],
+        unresolved_items: &[ConsensusItem],
+    ) -> Result<GenericFinalOutput> {
+        judge
+            .summarize_task(ctx, &self.pack, all_items, unresolved_items)
+            .await
     }
 }
 

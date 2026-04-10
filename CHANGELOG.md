@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.28 - 2026-04-10
+
+- Reworked Crucible around task-pack-defined roles and declarative rounds, decoupling execution plugins from reviewer personas and focus areas.
+- Added built-in role plans and finalization assignments for the `review`, `requirements-review`, `design-review`, and `test-plan-review` packs.
+- Changed review and generic consensus execution to instantiate role-specific agents from `role + plugin` assignments, with role-aware provenance in progress, reports, and PR review output.
+- Removed top-level plugin persona/focus/judge/analyzer config fields in favor of plugin execution config plus task-pack-owned roles, rounds, and finalization.
+- Expanded BDD coverage to verify custom multi-round role reassignment and final-judge prompt generation for consensus task packs.
+
 ## 0.1.27 - 2026-04-08
 
 - Replaced hardcoded agent fields in `PluginsConfig` with a dynamic `BTreeMap` using `serde(flatten)`, allowing any number of named agents via `[plugins.<agent-id>]` TOML sections.
