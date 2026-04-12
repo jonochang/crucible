@@ -245,7 +245,7 @@ pub fn load_task_pack(
         }
     }
 
-    built_in_packs()
+    built_in_packs(cfg)
         .into_iter()
         .find(|pack| pack.id() == pack_id)
         .ok_or_else(|| anyhow!("task pack '{}' not found", pack_id))
@@ -268,7 +268,7 @@ pub fn list_task_packs(
     for base in cfg.task_packs.paths.iter().map(PathBuf::from) {
         load_all_from_root(&base, &mut packs, &mut seen)?;
     }
-    for pack in built_in_packs() {
+    for pack in built_in_packs(cfg) {
         if seen.insert(pack.id().to_string()) {
             packs.push(pack);
         }
@@ -362,16 +362,17 @@ fn read_required(path: PathBuf) -> Result<String> {
     fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))
 }
 
-fn built_in_packs() -> Vec<TaskPack> {
+fn built_in_packs(cfg: &CrucibleConfig) -> Vec<TaskPack> {
     vec![
-        built_in_review_pack(),
+        built_in_review_pack(cfg),
         built_in_requirements_pack(),
         built_in_design_pack(),
         built_in_test_plan_pack(),
     ]
 }
 
-fn built_in_review_pack() -> TaskPack {
+fn built_in_review_pack(cfg: &CrucibleConfig) -> TaskPack {
+    let review_cfg = &cfg.task_packs.review;
     let pack = TaskPack {
         manifest: TaskPackManifest {
             id: "review".to_string(),
@@ -496,27 +497,27 @@ fn built_in_review_pack() -> TaskPack {
             finalization: TaskFinalization {
                 analyze: Some(TaskAssignment {
                     role: "review-analyzer".to_string(),
-                    plugin: "opencode-glm".to_string(),
+                    plugin: review_cfg.analyzer_plugin.clone(),
                     weight_override: None,
                 }),
                 judge: TaskAssignment {
                     role: "review-judge".to_string(),
-                    plugin: "codex".to_string(),
+                    plugin: review_cfg.judge_plugin.clone(),
                     weight_override: None,
                 },
                 convergence: Some(TaskAssignment {
                     role: "convergence-judge".to_string(),
-                    plugin: "codex".to_string(),
+                    plugin: review_cfg.convergence_plugin.clone(),
                     weight_override: None,
                 }),
                 structurizer: Some(TaskAssignment {
                     role: "review-judge".to_string(),
-                    plugin: "codex".to_string(),
+                    plugin: review_cfg.structurizer_plugin.clone(),
                     weight_override: None,
                 }),
                 autofix: Some(TaskAssignment {
                     role: "review-judge".to_string(),
-                    plugin: "codex".to_string(),
+                    plugin: review_cfg.autofix_plugin.clone(),
                     weight_override: None,
                 }),
             },
@@ -911,5 +912,45 @@ mod tests {
         assert_eq!(review.id(), "review");
         let pack = load_task_pack(&cfg, None, "requirements-review", &[]).unwrap();
         assert_eq!(pack.id(), "requirements-review");
+    }
+
+    #[test]
+    fn built_in_review_pack_honors_configured_finalization_plugins() {
+        let mut cfg = CrucibleConfig::default();
+        cfg.task_packs.review.analyzer_plugin = "claude-code".to_string();
+        cfg.task_packs.review.judge_plugin = "opencode-glm".to_string();
+        cfg.task_packs.review.convergence_plugin = "gemini".to_string();
+        cfg.task_packs.review.structurizer_plugin = "open-code".to_string();
+        cfg.task_packs.review.autofix_plugin = "codex".to_string();
+
+        let review = load_task_pack(&cfg, None, "review", &[]).unwrap();
+        let finalization = &review.manifest.finalization;
+
+        assert_eq!(
+            finalization.analyze.as_ref().map(|assignment| assignment.plugin.as_str()),
+            Some("claude-code")
+        );
+        assert_eq!(finalization.judge.plugin, "opencode-glm");
+        assert_eq!(
+            finalization
+                .convergence
+                .as_ref()
+                .map(|assignment| assignment.plugin.as_str()),
+            Some("gemini")
+        );
+        assert_eq!(
+            finalization
+                .structurizer
+                .as_ref()
+                .map(|assignment| assignment.plugin.as_str()),
+            Some("open-code")
+        );
+        assert_eq!(
+            finalization
+                .autofix
+                .as_ref()
+                .map(|assignment| assignment.plugin.as_str()),
+            Some("codex")
+        );
     }
 }

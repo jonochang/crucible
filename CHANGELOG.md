@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.30 - 2026-04-13
+
+- Added `[task_packs.review]` config overrides for the built-in review pack so analyzer, judge, convergence, structurizer, and autofix plugins can be customized without replacing the whole task pack.
+- Added coverage for partial review task-pack override parsing and for applying configured finalization plugin overrides to the built-in `review` pack.
+- Improved agent launch failure diagnostics to preserve the full error chain and include command, args, cwd, and `PATH` when CLI process spawning fails.
+
 ## 0.1.29 - 2026-04-10
 
 - Hardened token-optimization safeguards in the multi-agent review pipeline.

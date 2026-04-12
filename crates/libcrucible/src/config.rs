@@ -89,6 +89,30 @@ pub struct PrecheckConfig {
 pub struct TaskPackConfig {
     #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub review: ReviewTaskPackConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReviewTaskPackConfig {
+    pub analyzer_plugin: String,
+    pub judge_plugin: String,
+    pub convergence_plugin: String,
+    pub structurizer_plugin: String,
+    pub autofix_plugin: String,
+}
+
+impl Default for ReviewTaskPackConfig {
+    fn default() -> Self {
+        Self {
+            analyzer_plugin: "opencode-glm".to_string(),
+            judge_plugin: "codex".to_string(),
+            convergence_plugin: "codex".to_string(),
+            structurizer_plugin: "codex".to_string(),
+            autofix_plugin: "codex".to_string(),
+        }
+    }
 }
 
 impl Default for PrecheckConfig {
@@ -323,5 +347,62 @@ fn expand_env(input: &str) -> Result<String> {
 impl PluginsConfig {
     pub fn resolve_role(&self, id: &str) -> Option<&CliPluginConfig> {
         self.agent_configs.get(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn review_task_pack_overrides_can_be_partial() {
+        let raw = r#"
+[crucible]
+version = "1"
+
+[gate]
+enabled = true
+untangle_bin = "untangle"
+
+[context]
+reference_max_depth = 2
+reference_max_files = 30
+history_max_commits = 20
+history_max_days = 30
+docs_patterns = ["README.md"]
+docs_max_bytes = 50000
+
+[coordinator]
+max_rounds = 2
+quorum_threshold = 0.75
+agent_timeout_secs = 90
+devil_advocate = false
+
+[verdict]
+block_on = "Critical"
+
+[rate_limits]
+anthropic_rpm = 50
+google_rpm = 60
+openai_rpm = 60
+
+[plugins]
+agents = ["codex"]
+
+[plugins.codex]
+command = "codex"
+args = ["exec", "-", "--color", "never"]
+
+[task_packs.review]
+judge_plugin = "claude-code"
+"#;
+
+        let cfg: CrucibleConfig = toml::from_str(raw).expect("parse config");
+
+        assert_eq!(cfg.task_packs.review.judge_plugin, "claude-code");
+        assert_eq!(cfg.task_packs.review.analyzer_plugin, "opencode-glm");
+        assert_eq!(cfg.task_packs.review.convergence_plugin, "codex");
+        assert_eq!(cfg.task_packs.review.structurizer_plugin, "codex");
+        assert_eq!(cfg.task_packs.review.autofix_plugin, "codex");
     }
 }

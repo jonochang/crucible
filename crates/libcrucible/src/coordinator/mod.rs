@@ -100,12 +100,13 @@ impl Coordinator {
                         break;
                     }
                     Err(err) => {
+                        let err_message = format!("{err:#}");
                         self.emit(ProgressEvent::AgentError {
                             round: 0,
                             id: analyze_assignment.runtime_id.clone(),
                             message: format!(
                                 "analyzer attempt {}/{} failed: {}",
-                                attempt, analyzer_attempts, err
+                                attempt, analyzer_attempts, err_message
                             ),
                         });
                         if attempt == analyzer_attempts {
@@ -113,9 +114,9 @@ impl Coordinator {
                                 agent: analyze_assignment.runtime_id.clone(),
                                 stage: "analyzer".to_string(),
                                 round: None,
-                                message: err.to_string(),
+                                message: err_message.clone(),
                             });
-                            focus = Some(fallback_focus(ctx, &err.to_string()));
+                            focus = Some(fallback_focus(ctx, &err_message));
                         }
                     }
                 }
@@ -206,6 +207,7 @@ impl Coordinator {
                 let output = match output {
                     Ok(output) => output,
                     Err(err) => {
+                        let err_message = format!("{err:#}");
                         update_status(&mut statuses, &id, ReviewerState::Error, None);
                         self.emit(ProgressEvent::ParallelStatus {
                             round,
@@ -214,13 +216,13 @@ impl Coordinator {
                         self.emit(ProgressEvent::AgentError {
                             round,
                             id: id.clone(),
-                            message: err.to_string(),
+                            message: err_message.clone(),
                         });
                         agent_failures.push(AgentFailure {
                             agent: id.clone(),
                             stage: "review".to_string(),
                             round: Some(round),
-                            message: err.to_string(),
+                            message: err_message,
                         });
                         continue;
                     }

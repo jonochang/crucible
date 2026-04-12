@@ -139,6 +139,10 @@ impl CliAgentPlugin {
             }
         }
 
+        let cwd = std::env::current_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "<unknown cwd>".to_string());
+        let path_env = std::env::var("PATH").unwrap_or_else(|_| "<PATH unset>".to_string());
         let mut child = cmd
             .stdin(if is_gemini || is_opencode {
                 Stdio::null()
@@ -148,7 +152,14 @@ impl CliAgentPlugin {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("spawn {}", self.command))?;
+            .map_err(|err| {
+                let details = format!(
+                    "spawn {} failed: {}\ncommand: {}\nargs: {:?}\ncwd: {}\nPATH: {}",
+                    self.command, err, self.command, self.args, cwd, path_env
+                );
+                debug_log_line(&format!("[{}] {}", self.id, details));
+                anyhow!(details)
+            })?;
 
         if !is_gemini && !is_opencode {
             if let Some(stdin) = child.stdin.as_mut() {
