@@ -131,6 +131,18 @@ pub async fn run_review_tui(
                 }
                 ProgressEvent::AnalyzerStart => screen = Screen::Analyzing,
                 ProgressEvent::AnalyzerDone => progress.analyzer_done = true,
+                ProgressEvent::AnalysisSource {
+                    id,
+                    role,
+                    plugin,
+                    fallback,
+                } => {
+                    let mode = if *fallback { "fallback" } else { "agent" };
+                    progress.phase = Some(format!(
+                        "analysis source: {} role={} plugin={} ({})",
+                        id, role, plugin, mode
+                    ));
+                }
                 ProgressEvent::StartupPhase {
                     phase,
                     status,

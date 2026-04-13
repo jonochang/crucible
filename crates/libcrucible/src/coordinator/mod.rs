@@ -89,6 +89,10 @@ impl Coordinator {
         let mut analyzer_ctx = ctx.into_agent_ctx(None);
         analyzer_ctx.review_pack = Some(review_pack.clone());
         let mut focus = None;
+        let mut analysis_source = "fallback".to_string();
+        let mut analysis_role = "fallback".to_string();
+        let mut analysis_plugin = "fallback".to_string();
+        let mut analysis_fallback = true;
         let mut agent_failures = Vec::new();
         let analyzer_attempts: u8 = 2;
         if let Some(analyze_assignment) = &task_plan.finalization.analyze {
@@ -96,6 +100,10 @@ impl Coordinator {
             for attempt in 1..=analyzer_attempts {
                 match analyzer.analyze_focus(&analyzer_ctx).await {
                     Ok(result) => {
+                        analysis_source = analyze_assignment.runtime_id.clone();
+                        analysis_role = analyze_assignment.role.id.clone();
+                        analysis_plugin = analyze_assignment.plugin_id.clone();
+                        analysis_fallback = false;
                         focus = Some(result);
                         break;
                     }
@@ -125,6 +133,12 @@ impl Coordinator {
             focus = Some(fallback_focus(ctx, "no analyzer assignment configured"));
         }
         let focus = focus.expect("analyzer focus set");
+        self.emit(ProgressEvent::AnalysisSource {
+            id: analysis_source,
+            role: analysis_role,
+            plugin: analysis_plugin,
+            fallback: analysis_fallback,
+        });
         self.emit(ProgressEvent::AnalysisReady {
             markdown: render_analysis_markdown(&focus),
         });

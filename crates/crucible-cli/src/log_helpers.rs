@@ -87,6 +87,19 @@ pub fn write_log_event(w: &mut dyn Write, event: &ProgressEvent) {
         ProgressEvent::AnalyzerDone => {
             let _ = writeln!(w, "[progress] analyzer:done");
         }
+        ProgressEvent::AnalysisSource {
+            id,
+            role,
+            plugin,
+            fallback,
+        } => {
+            let mode = if *fallback { "fallback" } else { "agent" };
+            let _ = writeln!(
+                w,
+                "[progress] analyzer:source id={} role={} plugin={} mode={}",
+                id, role, plugin, mode
+            );
+        }
         ProgressEvent::StartupPhase {
             phase,
             status,

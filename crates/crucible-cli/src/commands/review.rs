@@ -1073,6 +1073,18 @@ fn emit_progress(run_id: Uuid, event: &ProgressEvent) {
         ProgressEvent::PhaseDone { phase } => eprintln!("[progress] phase:done {}", phase),
         ProgressEvent::AnalyzerStart => eprintln!("[progress] analyzer:start"),
         ProgressEvent::AnalyzerDone => eprintln!("[progress] analyzer:done"),
+        ProgressEvent::AnalysisSource {
+            id,
+            role,
+            plugin,
+            fallback,
+        } => {
+            let mode = if *fallback { "fallback" } else { "agent" };
+            eprintln!(
+                "[progress] analyzer:source id={} role={} plugin={} mode={}",
+                id, role, plugin, mode
+            );
+        }
         ProgressEvent::StartupPhase {
             phase,
             status,

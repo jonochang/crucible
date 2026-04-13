@@ -67,6 +67,12 @@ pub enum ProgressEvent {
     },
     AnalyzerStart,
     AnalyzerDone,
+    AnalysisSource {
+        id: String,
+        role: String,
+        plugin: String,
+        fallback: bool,
+    },
     StartupPhase {
         phase: StartupPhase,
         status: StartupPhaseStatus,

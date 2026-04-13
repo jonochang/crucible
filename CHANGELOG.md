@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.31 - 2026-04-13
+
+- Added explicit analyzer-source progress logging so runs now report the analyzer runtime id, role, plugin, and whether analysis used the configured agent or fallback context generation.
+- Surfaced analyzer-source information consistently in stderr progress logs, persisted run logs, and the review TUI.
+
 ## 0.1.30 - 2026-04-13
 
 - Added `[task_packs.review]` config overrides for the built-in review pack so analyzer, judge, convergence, structurizer, and autofix plugins can be customized without replacing the whole task pack.
