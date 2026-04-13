@@ -282,7 +282,7 @@ impl Coordinator {
                 .all(|status| status.state == ReviewerState::Done);
             // Early-exit: skip convergence judge + further rounds when
             // round 1 produced zero findings and all reviewers completed cleanly.
-            if current_count == 0 && round < total_rounds && round_completed_cleanly {
+            if current_count == 0 && usize::from(round) < total_rounds && round_completed_cleanly {
                 self.emit(ProgressEvent::ConvergenceJudgment {
                     round,
                     verdict: ConvergenceVerdict::Converged,
@@ -297,7 +297,7 @@ impl Coordinator {
                 });
                 break;
             }
-            if total_rounds > 1 && round < total_rounds {
+            if total_rounds > 1 && usize::from(round) < total_rounds {
                 let convergence_assignment = task_plan
                     .finalization
                     .convergence

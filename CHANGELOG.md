@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.32 - 2026-04-13
+
+- Fixed the coordinator’s round comparison logic to use matching integer types, resolving the release build failure introduced by the clean zero-finding early-exit path.
+
 ## 0.1.31 - 2026-04-13
 
 - Added explicit analyzer-source progress logging so runs now report the analyzer runtime id, role, plugin, and whether analysis used the configured agent or fallback context generation.
