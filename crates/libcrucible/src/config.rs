@@ -188,10 +188,12 @@ impl Default for CrucibleConfig {
             task_packs: TaskPackConfig::default(),
             plugins: PluginsConfig {
                 agents: vec![
-                    "claude-code".to_string(),
+                    "opencode-glm".to_string(),
                     "codex".to_string(),
-                    "gemini".to_string(),
+                    "opencode-kimi".to_string(),
                     "open-code".to_string(),
+                    "claude-code".to_string(),
+                    "gemini".to_string(),
                 ],
                 paths: vec![],
                 agent_configs: {

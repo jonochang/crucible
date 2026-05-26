@@ -346,8 +346,8 @@ pub struct ResolvedTaskPlan {
 }
 
 impl crate::config::PluginsConfig {
-    fn preferred_agent_order(&self) -> [&'static str; 4] {
-        ["claude-code", "codex", "gemini", "open-code"]
+    fn preferred_agent_order(&self) -> [&'static str; 6] {
+        ["opencode-glm", "codex", "opencode-kimi", "open-code", "claude-code", "gemini"]
     }
 
     fn uses_default_agent_pool(&self) -> bool {
@@ -359,14 +359,7 @@ impl crate::config::PluginsConfig {
     }
 
     pub fn resolve_available_agents(&self) -> Result<ResolvedAgents> {
-        let requested = if self.uses_default_agent_pool() {
-            self.preferred_agent_order()
-                .into_iter()
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        } else {
-            self.agents.clone()
-        };
+        let requested = self.agents.clone();
 
         let available = requested
             .into_iter()
@@ -381,7 +374,7 @@ impl crate::config::PluginsConfig {
 
         if self.uses_default_agent_pool() {
             return Err(anyhow!(
-                "no available agents found on PATH from preferred pool: claude-code, codex, gemini, open-code"
+                "no available agents found on PATH from preferred pool"
             ));
         }
 
@@ -465,9 +458,9 @@ mod tests {
         let cfg = CrucibleConfig::default();
         let registry = PluginRegistry::from_config(&cfg).expect("registry");
         let ids = registry.active_plugin_ids.clone();
-        assert_eq!(ids, vec!["claude-code", "codex", "open-code"]);
+        assert_eq!(ids, vec!["opencode-glm", "codex", "opencode-kimi"]);
         let standby = registry.standby_plugin_ids.iter().cloned().collect::<Vec<_>>();
-        assert!(standby.is_empty());
+        assert_eq!(standby, vec!["open-code", "claude-code"]);
     }
 
     #[test]
@@ -501,7 +494,7 @@ mod tests {
         let ids = registry.active_plugin_ids.clone();
         let standby = registry.standby_plugin_ids.iter().cloned().collect::<Vec<_>>();
 
-        assert_eq!(ids, vec!["claude-code", "codex", "gemini"]);
-        assert_eq!(standby, vec!["open-code"]);
+        assert_eq!(ids, vec!["opencode-glm", "codex", "opencode-kimi"]);
+        assert_eq!(standby, vec!["open-code", "claude-code", "gemini"]);
     }
 }

@@ -470,7 +470,7 @@ fn built_in_review_pack(cfg: &CrucibleConfig) -> TaskPack {
                         },
                         TaskAssignment {
                             role: "security-reliability".to_string(),
-                            plugin: "claude-code".to_string(),
+                            plugin: "opencode-kimi".to_string(),
                             weight_override: None,
                         },
                     ],
@@ -481,7 +481,7 @@ fn built_in_review_pack(cfg: &CrucibleConfig) -> TaskPack {
                     assignments: vec![
                         TaskAssignment {
                             role: "contrarian-review".to_string(),
-                            plugin: "claude-code".to_string(),
+                            plugin: "opencode-glm".to_string(),
                             weight_override: None,
                         },
                         TaskAssignment {
