@@ -189,6 +189,7 @@ impl Default for CrucibleConfig {
             plugins: PluginsConfig {
                 agents: vec![
                     "opencode-glm".to_string(),
+                    "opencode-deepseek".to_string(),
                     "codex".to_string(),
                     "opencode-kimi".to_string(),
                     "open-code".to_string(),
@@ -256,6 +257,19 @@ impl Default for CrucibleConfig {
                                 "run".to_string(),
                                 "--model".to_string(),
                                 "zai-coding-plan/glm-5.1".to_string(),
+                                "--format".to_string(),
+                                "json".to_string(),
+                            ],
+                        },
+                    );
+                    m.insert(
+                        "opencode-deepseek".to_string(),
+                        CliPluginConfig {
+                            command: "opencode".to_string(),
+                            args: vec![
+                                "run".to_string(),
+                                "--model".to_string(),
+                                "opencode-go/deepseek-v4-pro".to_string(),
                                 "--format".to_string(),
                                 "json".to_string(),
                             ],

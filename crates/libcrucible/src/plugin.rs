@@ -346,8 +346,8 @@ pub struct ResolvedTaskPlan {
 }
 
 impl crate::config::PluginsConfig {
-    fn preferred_agent_order(&self) -> [&'static str; 6] {
-        ["opencode-glm", "codex", "opencode-kimi", "open-code", "claude-code", "gemini"]
+    fn preferred_agent_order(&self) -> [&'static str; 7] {
+        ["opencode-glm", "opencode-deepseek", "codex", "opencode-kimi", "open-code", "claude-code", "gemini"]
     }
 
     fn uses_default_agent_pool(&self) -> bool {
@@ -458,9 +458,9 @@ mod tests {
         let cfg = CrucibleConfig::default();
         let registry = PluginRegistry::from_config(&cfg).expect("registry");
         let ids = registry.active_plugin_ids.clone();
-        assert_eq!(ids, vec!["opencode-glm", "codex", "opencode-kimi"]);
+        assert_eq!(ids, vec!["opencode-glm", "opencode-deepseek", "codex"]);
         let standby = registry.standby_plugin_ids.iter().cloned().collect::<Vec<_>>();
-        assert_eq!(standby, vec!["open-code", "claude-code"]);
+        assert_eq!(standby, vec!["opencode-kimi", "open-code", "claude-code"]);
     }
 
     #[test]
@@ -494,7 +494,7 @@ mod tests {
         let ids = registry.active_plugin_ids.clone();
         let standby = registry.standby_plugin_ids.iter().cloned().collect::<Vec<_>>();
 
-        assert_eq!(ids, vec!["opencode-glm", "codex", "opencode-kimi"]);
-        assert_eq!(standby, vec!["open-code", "claude-code", "gemini"]);
+        assert_eq!(ids, vec!["opencode-glm", "opencode-deepseek", "codex"]);
+        assert_eq!(standby, vec!["opencode-kimi", "open-code", "claude-code", "gemini"]);
     }
 }
