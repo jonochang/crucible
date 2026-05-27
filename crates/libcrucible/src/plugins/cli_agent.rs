@@ -119,7 +119,6 @@ impl CliAgentPlugin {
         }
         if is_opencode {
             let has_run = self.args.iter().any(|a| a == "run");
-            let has_prompt_flag = self.args.iter().any(|a| a == "-p" || a == "--prompt");
             let has_format_flag = self
                 .args
                 .iter()
@@ -130,12 +129,11 @@ impl CliAgentPlugin {
                 }
                 cmd.arg(&prompt);
             } else {
-                if !has_prompt_flag {
-                    cmd.args(["-p", &prompt]);
-                }
+                cmd.arg("run");
                 if !has_format_flag {
-                    cmd.args(["-f", "json"]);
+                    cmd.args(["--format", "json"]);
                 }
+                cmd.arg(&prompt);
             }
         }
 
