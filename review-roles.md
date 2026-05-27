@@ -4,7 +4,9 @@ The `review` pack has two variants: **long** (default) and **short** (`--short` 
 
 ## Long Review Pack (default)
 
-Orchestrates 13 roles across a pre-round context extractor, 3 rounds, and finalization.
+Orchestrates 15 roles across a pre-round context extractor, a gate round, 3 review rounds, and finalization.
+
+The key design principle: **check intent and simplicity first**. If the change is misaligned with its purpose or unnecessarily complex, the review exits early without running expensive detailed agents.
 
 ### Pre-Round — Context Extraction (Analyzer)
 
@@ -14,7 +16,17 @@ The Change Intent Analyst runs before any reviewer, producing a shared review br
 |---|---|---|---|
 | `change-intent-extractor` | Change Intent Analyst | PR purpose, affected contracts, changed APIs, hidden assumptions, required invariants, migration/runtime implications | `opencode-glm` |
 
-### Round 1 — Discovery (6 agents)
+### Round 1 — Intent and Simplicity Gate (`gate: true`)
+
+Runs first. If either reviewer finds a **Critical**-severity issue, the review stops immediately
+with a "simplify before review" verdict — no further rounds execute.
+
+| Role ID | Name | Focus | Weight | Default Plugin |
+|---|---|---|---|---|
+| `intent-alignment-review` | Intent Alignment Reviewer | Whether the implementation matches the change's stated purpose. Flag scope creep, missing behaviour, over-engineering, misalignment with documented intent | 2.0 | `opencode-glm` |
+| `simplicity-review` | Simplicity Reviewer | Whether the implementation is the simplest possible approach. Flag unnecessary abstraction, avoidable indirection, over-generalisation, reinvention of existing utilities, complexity exceeding the problem scope | 2.0 | `codex` |
+
+### Round 2 — Discovery (6 agents)
 
 Six agents independently review the diff from different perspectives.
 
@@ -25,18 +37,16 @@ Six agents independently review the diff from different perspectives.
 | `security-reliability` | Security and Reliability Auditor | Trust boundaries, authorization, secrets, injection, exposure, failure modes, recovery, retry storms, resource leaks | 1.5 | `opencode-kimi` |
 | `requirements-contract-review` | Requirements and Contract Reviewer | User-visible behavior, business rules, domain invariants, acceptance criteria, intent-vs-implementation gaps | 1.5 | `codex` |
 | `test-evidence-review` | Test Evidence Reviewer | Missing tests, weak assertions, false confidence from over-mocking, missing negative/boundary/authorization/migration tests | 1.25 | `codex` |
-| `performance-resource-review` | Performance and Resource Reviewer | N+1 queries, unbounded loops, large allocations, missing indexes, lock contention, handle leaks, blocking I/O in hot paths | 1.0 | `opencode-glm` |
+| `performance-resource-review` | Performance and Resource Reviewer | N+1 queries, unbounded loops, large allocations, missing indexes, lock contention, handle leaks, blocking I/O | 1.0 | `opencode-glm` |
 
-### Round 2 — Challenge and Verify (2 agents)
-
-Cross-pollinated findings from Round 1 are distributed to adversarial reviewers.
+### Round 3 — Challenge and Verify (2 agents)
 
 | Role ID | Name | Focus | Weight | Default Plugin |
 |---|---|---|---|---|
 | `contrarian-review` | Contrarian Systems Reviewer | Challenge assumptions, cross-file interactions, integration risk, deployment-order failures, background job/cache/migration interactions | 1.25 | `opencode-glm` |
 | `verification-review` | Verification Reviewer | Validate prior findings, prune weak claims, confirm evidence, surface duplicates, verify fixes don't introduce new bugs | 1.25 | `codex` |
 
-### Round 3 — Fix Planning (1 agent)
+### Round 4 — Fix Planning (1 agent)
 
 | Role ID | Name | Focus | Weight | Default Plugin |
 |---|---|---|---|---|
@@ -53,7 +63,7 @@ Cross-pollinated findings from Round 1 are distributed to adversarial reviewers.
 
 ## Short Review Pack (`--short`)
 
-Same as the original 8-role, 2-round pack for fast reviews.
+Same as the original 8-role, 2-round pack for fast reviews. No gate round.
 
 | Round | Roles | Agents |
 |---|---|---|
@@ -64,8 +74,8 @@ Same as the original 8-role, 2-round pack for fast reviews.
 ## Usage
 
 ```
-crucible review --branch          # long pack (default, ~6-13 agents)
-crucible review --branch --short  # short pack (fast, ~5-8 agents)
+crucible review --branch          # long pack (default, gate + 7-15 agents)
+crucible review --branch --short  # short pack (fast, ~5-8 agents, no gate)
 ```
 
 ## Plugin Configuration
@@ -75,6 +85,8 @@ All role-plugin assignments are configurable via `.crucible.toml` under `[task_p
 ```toml
 [task_packs.review]
 analyzer_plugin = "opencode-glm"           # change-intent-extractor
+intent_alignment_plugin = "opencode-glm"   # gate round
+simplicity_review_plugin = "codex"         # gate round
 program_semantics_plugin = "opencode-glm"
 maintainer_review_plugin = "codex"
 security_reliability_plugin = "opencode-kimi"

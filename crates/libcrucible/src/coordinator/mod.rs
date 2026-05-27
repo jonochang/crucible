@@ -280,6 +280,32 @@ impl Coordinator {
             let round_completed_cleanly = statuses
                 .iter()
                 .all(|status| status.state == ReviewerState::Done);
+
+            if round_plan.gate {
+                let gate_blockers = current_findings
+                    .iter()
+                    .filter(|f| f.severity == Severity::Critical)
+                    .count();
+                if gate_blockers > 0 && usize::from(round) < total_rounds {
+                    self.emit(ProgressEvent::ConvergenceJudgment {
+                        round,
+                        verdict: ConvergenceVerdict::NotConverged,
+                        rationale: format!(
+                            "Gate '{}' blocked with {} Critical finding(s). Simplify the change before detailed review.",
+                            round_plan.name, gate_blockers
+                        ),
+                    });
+                    self.emit(ProgressEvent::RoundComplete {
+                        round,
+                        total_rounds: total_rounds as u8,
+                    });
+                    self.emit(ProgressEvent::PhaseDone {
+                        phase: format!("round-{round}"),
+                    });
+                    break;
+                }
+            }
+
             // Early-exit: skip convergence judge + further rounds when
             // round 1 produced zero findings and all reviewers completed cleanly.
             if current_count == 0 && usize::from(round) < total_rounds && round_completed_cleanly {

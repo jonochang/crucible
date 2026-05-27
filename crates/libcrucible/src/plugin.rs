@@ -191,6 +191,7 @@ impl PluginRegistry {
                 name: round.name.clone(),
                 mode: round.mode.clone(),
                 assignments: resolved_assignments,
+                gate: round.gate,
             });
         }
 
@@ -332,6 +333,7 @@ pub struct ResolvedRoundPlan {
     pub name: String,
     pub mode: crate::task_pack::RoundMode,
     pub assignments: Vec<ResolvedRoleAssignment>,
+    pub gate: bool,
 }
 
 #[derive(Debug, Clone)]

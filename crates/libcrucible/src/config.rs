@@ -110,6 +110,8 @@ pub struct ReviewTaskPackConfig {
     pub test_evidence_plugin: String,
     pub performance_resource_plugin: String,
     pub fix_strategy_plugin: String,
+    pub intent_alignment_plugin: String,
+    pub simplicity_review_plugin: String,
     pub short_review: bool,
 }
 
@@ -130,6 +132,8 @@ impl Default for ReviewTaskPackConfig {
             test_evidence_plugin: "codex".to_string(),
             performance_resource_plugin: "opencode-glm".to_string(),
             fix_strategy_plugin: "codex".to_string(),
+            intent_alignment_plugin: "opencode-glm".to_string(),
+            simplicity_review_plugin: "codex".to_string(),
             short_review: false,
         }
     }
@@ -188,7 +192,7 @@ impl Default for CrucibleConfig {
                 docs_max_bytes: 50_000,
             },
             coordinator: CoordinatorConfig {
-                max_rounds: 3,
+                max_rounds: 4,
                 quorum_threshold: 0.75,
                 agent_timeout_secs: 90,
                 devil_advocate: false,
