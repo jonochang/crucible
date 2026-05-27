@@ -118,20 +118,20 @@ pub struct ReviewTaskPackConfig {
 impl Default for ReviewTaskPackConfig {
     fn default() -> Self {
         Self {
-            analyzer_plugin: "opencode-glm".to_string(),
+            analyzer_plugin: "opencode-deepseek".to_string(),
             judge_plugin: "codex".to_string(),
-            convergence_plugin: "codex".to_string(),
-            structurizer_plugin: "codex".to_string(),
+            convergence_plugin: "claude-code".to_string(),
+            structurizer_plugin: "claude-code".to_string(),
             autofix_plugin: "codex".to_string(),
             program_semantics_plugin: "opencode-deepseek".to_string(),
-            maintainer_review_plugin: "opencode-glm".to_string(),
-            security_reliability_plugin: "opencode-kimi".to_string(),
+            maintainer_review_plugin: "codex".to_string(),
+            security_reliability_plugin: "claude-code".to_string(),
             contrarian_review_plugin: "opencode-deepseek".to_string(),
             verification_review_plugin: "opencode-glm".to_string(),
-            requirements_contract_plugin: "opencode-glm".to_string(),
+            requirements_contract_plugin: "opencode-deepseek".to_string(),
             test_evidence_plugin: "opencode-glm".to_string(),
             performance_resource_plugin: "opencode-deepseek".to_string(),
-            fix_strategy_plugin: "opencode-glm".to_string(),
+            fix_strategy_plugin: "opencode-deepseek".to_string(),
             intent_alignment_plugin: "opencode-glm".to_string(),
             simplicity_review_plugin: "opencode-glm".to_string(),
             short_review: false,
@@ -440,9 +440,9 @@ judge_plugin = "claude-code"
         let cfg: CrucibleConfig = toml::from_str(raw).expect("parse config");
 
         assert_eq!(cfg.task_packs.review.judge_plugin, "claude-code");
-        assert_eq!(cfg.task_packs.review.analyzer_plugin, "opencode-glm");
-        assert_eq!(cfg.task_packs.review.convergence_plugin, "codex");
-        assert_eq!(cfg.task_packs.review.structurizer_plugin, "codex");
+        assert_eq!(cfg.task_packs.review.analyzer_plugin, "opencode-deepseek");
+        assert_eq!(cfg.task_packs.review.convergence_plugin, "claude-code");
+        assert_eq!(cfg.task_packs.review.structurizer_plugin, "claude-code");
         assert_eq!(cfg.task_packs.review.autofix_plugin, "codex");
     }
 }
