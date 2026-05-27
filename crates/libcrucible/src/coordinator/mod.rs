@@ -281,33 +281,8 @@ impl Coordinator {
                 .iter()
                 .all(|status| status.state == ReviewerState::Done);
 
-            if round_plan.gate {
-                let gate_blockers = current_findings
-                    .iter()
-                    .filter(|f| f.severity == Severity::Critical)
-                    .count();
-                if gate_blockers > 0 && usize::from(round) < total_rounds {
-                    self.emit(ProgressEvent::ConvergenceJudgment {
-                        round,
-                        verdict: ConvergenceVerdict::NotConverged,
-                        rationale: format!(
-                            "Gate '{}' blocked with {} Critical finding(s). Simplify the change before detailed review.",
-                            round_plan.name, gate_blockers
-                        ),
-                    });
-                    self.emit(ProgressEvent::RoundComplete {
-                        round,
-                        total_rounds: total_rounds as u8,
-                    });
-                    self.emit(ProgressEvent::PhaseDone {
-                        phase: format!("round-{round}"),
-                    });
-                    break;
-                }
-            }
-
             // Early-exit: skip convergence judge + further rounds when
-            // round 1 produced zero findings and all reviewers completed cleanly.
+            // round produced zero findings and all reviewers completed cleanly.
             if current_count == 0 && usize::from(round) < total_rounds && round_completed_cleanly {
                 self.emit(ProgressEvent::ConvergenceJudgment {
                     round,
@@ -339,27 +314,65 @@ impl Coordinator {
                 let (verdict, rationale) = if let Ok(decision) = judge_decision {
                     (decision.verdict, decision.rationale)
                 } else {
-                    let converged = round > 1
-                        && current_count == previous_count
-                        && current_high_count <= previous_high_count;
-                    let verdict = if converged {
-                        ConvergenceVerdict::Converged
+                    if round_plan.gate && current_high_count > 0 {
+                        (
+                            ConvergenceVerdict::NotConverged,
+                            format!(
+                                "Gate '{}' blocked: convergence judge unavailable, {} Critical finding(s) reported. Simplify before detailed review.",
+                                round_plan.name, current_high_count
+                            ),
+                        )
                     } else {
-                        ConvergenceVerdict::NotConverged
-                    };
-                    let rationale = if converged {
-                        "No net-new findings and no increase in critical risk.".to_string()
-                    } else {
-                        "Net-new findings or unresolved high-severity issues remain.".to_string()
-                    };
-                    (verdict, rationale)
+                        let converged = round > 1
+                            && current_count == previous_count
+                            && current_high_count <= previous_high_count;
+                        let verdict = if converged {
+                            ConvergenceVerdict::Converged
+                        } else {
+                            ConvergenceVerdict::NotConverged
+                        };
+                        let rationale = if converged {
+                            "No net-new findings and no increase in critical risk.".to_string()
+                        } else {
+                            "Net-new findings or unresolved high-severity issues remain.".to_string()
+                        };
+                        (verdict, rationale)
+                    }
                 };
+                let converged = verdict == ConvergenceVerdict::Converged;
+
+                if round_plan.gate && converged && current_high_count > 0 {
+                    self.emit(ProgressEvent::ConvergenceJudgment {
+                        round,
+                        verdict: ConvergenceVerdict::NotConverged,
+                        rationale: format!(
+                            "Gate blocked: convergence judge confirmed {} Critical simplicity/intent issue(s) in '{}'. Simplify the change before detailed review.",
+                            current_high_count, round_plan.name
+                        ),
+                    });
+                    self.emit(ProgressEvent::RoundComplete {
+                        round,
+                        total_rounds: total_rounds as u8,
+                    });
+                    self.emit(ProgressEvent::PhaseDone {
+                        phase: format!("round-{round}"),
+                    });
+                    break;
+                }
+
                 self.emit(ProgressEvent::ConvergenceJudgment {
                     round,
                     verdict,
-                    rationale,
+                    rationale: if round_plan.gate {
+                        format!(
+                            "Gate '{}' passed: convergence judge found findings uncertain or unconfirmed. Proceeding to detailed review.",
+                            round_plan.name
+                        )
+                    } else {
+                        rationale
+                    },
                 });
-                let converged = verdict == ConvergenceVerdict::Converged;
+
                 if converged {
                     self.emit(ProgressEvent::RoundComplete {
                         round,
