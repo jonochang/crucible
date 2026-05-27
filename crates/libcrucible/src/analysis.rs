@@ -15,6 +15,14 @@ pub struct FocusAreas {
     pub design_patterns: Vec<String>,
     #[serde(default)]
     pub reviewer_checklist: Vec<String>,
+    #[serde(default)]
+    pub intended_behavior: String,
+    #[serde(default)]
+    pub contract_changes: Vec<String>,
+    #[serde(default)]
+    pub invariants: Vec<String>,
+    #[serde(default)]
+    pub security_scope: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

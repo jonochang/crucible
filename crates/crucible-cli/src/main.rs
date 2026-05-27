@@ -9,8 +9,10 @@ mod tui;
 #[derive(Parser)]
 #[command(name = "crucible", version, about = "Multi-agent consensus CLI", after_long_help = concat!(
     "EXAMPLES:\n",
-    "  Code review on current branch vs main:\n",
+    "  Code review on current branch vs main (default: deep review):\n",
     "      crucible review --branch\n\n",
+    "  Fast review with fewer agents:\n",
+    "      crucible review --branch --short\n\n",
     "  Design review with architecture doc:\n",
     "      crucible consensus run --pack design-review --prompt \"Evaluate this architecture\" --attach ARCHITECTURE.md\n\n",
     "  Requirements review with inline text:\n",

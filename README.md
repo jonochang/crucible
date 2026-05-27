@@ -88,7 +88,29 @@ Verdict: BLOCK
 
 ## Configuration
 
-Run `crucible config init` to generate `.crucible.toml` in your repo. Crucible searches the current directory and parents for `.crucible.toml`, then falls back to `~/.config/crucible/config.toml`, otherwise defaults are used.
+Create a config with:
+
+```bash
+# Write a repo-local config in the current directory
+crucible config init
+
+# Write a global fallback config
+crucible config init --global
+
+# Include every configured agent in the generated review list
+crucible config init --full
+
+# Verify the active config loads cleanly
+crucible config validate
+```
+
+Crucible loads config in this order:
+
+1. `.crucible.toml` in the current directory or a parent directory
+2. `~/.config/crucible/config.toml`
+3. built-in defaults
+
+Run `crucible config init` to generate `.crucible.toml` in your repo.
 
 Example (default values):
 

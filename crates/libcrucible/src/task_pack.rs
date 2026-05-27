@@ -372,6 +372,14 @@ fn built_in_packs(cfg: &CrucibleConfig) -> Vec<TaskPack> {
 }
 
 fn built_in_review_pack(cfg: &CrucibleConfig) -> TaskPack {
+    if cfg.task_packs.review.short_review {
+        built_in_review_pack_short(cfg)
+    } else {
+        built_in_review_pack_long(cfg)
+    }
+}
+
+fn built_in_review_pack_short(cfg: &CrucibleConfig) -> TaskPack {
     let review_cfg = &cfg.task_packs.review;
     let pack = TaskPack {
         manifest: TaskPackManifest {
@@ -453,24 +461,24 @@ fn built_in_review_pack(cfg: &CrucibleConfig) -> TaskPack {
                     default_weight: 1.0,
                 },
             ],
-            rounds: vec![
+        rounds: vec![
                 TaskRound {
                     name: "Initial Review".to_string(),
                     mode: RoundMode::Discover,
                     assignments: vec![
                         TaskAssignment {
                             role: "program-semantics".to_string(),
-                            plugin: "opencode-glm".to_string(),
+                            plugin: review_cfg.program_semantics_plugin.clone(),
                             weight_override: None,
                         },
                         TaskAssignment {
                             role: "maintainer-review".to_string(),
-                            plugin: "codex".to_string(),
+                            plugin: review_cfg.maintainer_review_plugin.clone(),
                             weight_override: None,
                         },
                         TaskAssignment {
                             role: "security-reliability".to_string(),
-                            plugin: "opencode-kimi".to_string(),
+                            plugin: review_cfg.security_reliability_plugin.clone(),
                             weight_override: None,
                         },
                     ],
@@ -481,12 +489,12 @@ fn built_in_review_pack(cfg: &CrucibleConfig) -> TaskPack {
                     assignments: vec![
                         TaskAssignment {
                             role: "contrarian-review".to_string(),
-                            plugin: "opencode-glm".to_string(),
+                            plugin: review_cfg.contrarian_review_plugin.clone(),
                             weight_override: None,
                         },
                         TaskAssignment {
                             role: "verification-review".to_string(),
-                            plugin: "codex".to_string(),
+                            plugin: review_cfg.verification_review_plugin.clone(),
                             weight_override: None,
                         },
                     ],
@@ -535,7 +543,241 @@ fn built_in_review_pack(cfg: &CrucibleConfig) -> TaskPack {
         render_prompt: None,
         source: TaskPackSource::BuiltIn,
     };
-    pack.validate_schema().expect("built-in review pack should be valid");
+    pack.validate_schema().expect("built-in short review pack should be valid");
+    pack
+}
+
+fn built_in_review_pack_long(cfg: &CrucibleConfig) -> TaskPack {
+    let review_cfg = &cfg.task_packs.review;
+    let pack = TaskPack {
+        manifest: TaskPackManifest {
+            id: "review".to_string(),
+            version: "1".to_string(),
+            title: "Code Review".to_string(),
+            description: "Deep multi-agent review with context extraction, cross-perspective discovery, adversarial challenge, fix planning, and consensus judging.".to_string(),
+            allowed_attachment_kinds: vec![AttachmentKind::Diff, AttachmentKind::SourceFile],
+            context_providers: vec![
+                ContextProvider::GitDiff,
+                ContextProvider::SelectedFiles,
+                ContextProvider::RepoDocs,
+                ContextProvider::GitHistory,
+                ContextProvider::Prechecks,
+            ],
+            roles: vec![
+                TaskPackRole {
+                    id: "change-intent-extractor".to_string(),
+                    name: "Change Intent Analyst".to_string(),
+                    persona: "Change Intent Analyst".to_string(),
+                    focus: "PR purpose, affected contracts, changed APIs, hidden assumptions, required invariants, migration/runtime implications".to_string(),
+                    prompt_template: PromptTemplate::Analyze,
+                    default_weight: 1.0,
+                },
+                TaskPackRole {
+                    id: "program-semantics".to_string(),
+                    name: "Program Semantics Auditor".to_string(),
+                    persona: "Program Semantics Auditor".to_string(),
+                    focus: "State transitions, invariants, hidden regressions, control-flow mistakes, concurrency hazards, and edge-case correctness".to_string(),
+                    prompt_template: PromptTemplate::Discover,
+                    default_weight: 1.5,
+                },
+                TaskPackRole {
+                    id: "maintainer-review".to_string(),
+                    name: "Principal Maintainer".to_string(),
+                    persona: "Principal Maintainer".to_string(),
+                    focus: "API contracts, refactor safety, maintainability, change surface area, design coherence, migration safety".to_string(),
+                    prompt_template: PromptTemplate::Discover,
+                    default_weight: 1.5,
+                },
+                TaskPackRole {
+                    id: "security-reliability".to_string(),
+                    name: "Security and Reliability Auditor".to_string(),
+                    persona: "Security and Reliability Auditor".to_string(),
+                    focus: "Trust boundaries, authorization, secrets, injection, exposure, abuse, failure modes, recovery, retry storms, resource leaks, timeout/cancellation gaps".to_string(),
+                    prompt_template: PromptTemplate::Discover,
+                    default_weight: 1.5,
+                },
+                TaskPackRole {
+                    id: "requirements-contract-review".to_string(),
+                    name: "Requirements and Contract Reviewer".to_string(),
+                    persona: "Requirements and Contract Reviewer".to_string(),
+                    focus: "User-visible behavior, business rules, policy rules, domain invariants, acceptance criteria, intent-vs-implementation gaps".to_string(),
+                    prompt_template: PromptTemplate::Discover,
+                    default_weight: 1.5,
+                },
+                TaskPackRole {
+                    id: "test-evidence-review".to_string(),
+                    name: "Test Evidence Reviewer".to_string(),
+                    persona: "Test Evidence Reviewer".to_string(),
+                    focus: "Missing tests, weak assertions, false confidence from over-mocking, missing negative cases, missing boundary/authorization/migration tests".to_string(),
+                    prompt_template: PromptTemplate::Discover,
+                    default_weight: 1.25,
+                },
+                TaskPackRole {
+                    id: "performance-resource-review".to_string(),
+                    name: "Performance and Resource Reviewer".to_string(),
+                    persona: "Performance and Resource Reviewer".to_string(),
+                    focus: "N+1 queries, unbounded loops, large allocations, missing indexes, lock contention, handle leaks, cache invalidation, blocking I/O in hot paths".to_string(),
+                    prompt_template: PromptTemplate::Discover,
+                    default_weight: 1.0,
+                },
+                TaskPackRole {
+                    id: "contrarian-review".to_string(),
+                    name: "Contrarian Systems Reviewer".to_string(),
+                    persona: "Contrarian Systems Reviewer".to_string(),
+                    focus: "Challenge assumptions, cross-file interactions, integration risk, deployment-order failures, background job/cache/migration interactions, unlikely but plausible failure paths".to_string(),
+                    prompt_template: PromptTemplate::Challenge,
+                    default_weight: 1.25,
+                },
+                TaskPackRole {
+                    id: "verification-review".to_string(),
+                    name: "Verification Reviewer".to_string(),
+                    persona: "Verification Reviewer".to_string(),
+                    focus: "Validate prior findings, prune weak claims, confirm evidence, surface duplicates or severity inflation, verify fixes don't introduce new bugs".to_string(),
+                    prompt_template: PromptTemplate::Verify,
+                    default_weight: 1.25,
+                },
+                TaskPackRole {
+                    id: "fix-strategy-review".to_string(),
+                    name: "Fix Strategy Reviewer".to_string(),
+                    persona: "Fix Strategy Reviewer".to_string(),
+                    focus: "Minimal fixes, risk containment, tests first, migration safety, avoiding overreach, isolation plan for each canonical issue".to_string(),
+                    prompt_template: PromptTemplate::Judge,
+                    default_weight: 1.0,
+                },
+                TaskPackRole {
+                    id: "review-analyzer".to_string(),
+                    name: "Review Analyzer".to_string(),
+                    persona: "Senior Review Analyst".to_string(),
+                    focus: "Summarize what changed, major risk areas, tradeoffs, and reviewer checklist".to_string(),
+                    prompt_template: PromptTemplate::Analyze,
+                    default_weight: 1.0,
+                },
+                TaskPackRole {
+                    id: "review-judge".to_string(),
+                    name: "Review Judge".to_string(),
+                    persona: "Final Review Judge".to_string(),
+                    focus: "Synthesize canonical issues, preserve only supported claims, and produce actionable final guidance".to_string(),
+                    prompt_template: PromptTemplate::Judge,
+                    default_weight: 1.5,
+                },
+                TaskPackRole {
+                    id: "convergence-judge".to_string(),
+                    name: "Convergence Judge".to_string(),
+                    persona: "Strict Convergence Judge".to_string(),
+                    focus: "Determine whether material disagreement or net-new high-severity risk remains across rounds".to_string(),
+                    prompt_template: PromptTemplate::Convergence,
+                    default_weight: 1.0,
+                },
+            ],
+            rounds: vec![
+                TaskRound {
+                    name: "Discovery".to_string(),
+                    mode: RoundMode::Discover,
+                    assignments: vec![
+                        TaskAssignment {
+                            role: "program-semantics".to_string(),
+                            plugin: review_cfg.program_semantics_plugin.clone(),
+                            weight_override: None,
+                        },
+                        TaskAssignment {
+                            role: "maintainer-review".to_string(),
+                            plugin: review_cfg.maintainer_review_plugin.clone(),
+                            weight_override: None,
+                        },
+                        TaskAssignment {
+                            role: "security-reliability".to_string(),
+                            plugin: review_cfg.security_reliability_plugin.clone(),
+                            weight_override: None,
+                        },
+                        TaskAssignment {
+                            role: "requirements-contract-review".to_string(),
+                            plugin: review_cfg.requirements_contract_plugin.clone(),
+                            weight_override: None,
+                        },
+                        TaskAssignment {
+                            role: "test-evidence-review".to_string(),
+                            plugin: review_cfg.test_evidence_plugin.clone(),
+                            weight_override: None,
+                        },
+                        TaskAssignment {
+                            role: "performance-resource-review".to_string(),
+                            plugin: review_cfg.performance_resource_plugin.clone(),
+                            weight_override: None,
+                        },
+                    ],
+                },
+                TaskRound {
+                    name: "Challenge and Verify".to_string(),
+                    mode: RoundMode::Challenge,
+                    assignments: vec![
+                        TaskAssignment {
+                            role: "contrarian-review".to_string(),
+                            plugin: review_cfg.contrarian_review_plugin.clone(),
+                            weight_override: None,
+                        },
+                        TaskAssignment {
+                            role: "verification-review".to_string(),
+                            plugin: review_cfg.verification_review_plugin.clone(),
+                            weight_override: None,
+                        },
+                    ],
+                },
+                TaskRound {
+                    name: "Fix Planning".to_string(),
+                    mode: RoundMode::Verify,
+                    assignments: vec![
+                        TaskAssignment {
+                            role: "fix-strategy-review".to_string(),
+                            plugin: review_cfg.fix_strategy_plugin.clone(),
+                            weight_override: None,
+                        },
+                    ],
+                },
+            ],
+            quorum: 0.75,
+            allow_clarifications: false,
+            finalization: TaskFinalization {
+                analyze: Some(TaskAssignment {
+                    role: "change-intent-extractor".to_string(),
+                    plugin: review_cfg.analyzer_plugin.clone(),
+                    weight_override: None,
+                }),
+                judge: TaskAssignment {
+                    role: "review-judge".to_string(),
+                    plugin: review_cfg.judge_plugin.clone(),
+                    weight_override: None,
+                },
+                convergence: Some(TaskAssignment {
+                    role: "convergence-judge".to_string(),
+                    plugin: review_cfg.convergence_plugin.clone(),
+                    weight_override: None,
+                }),
+                structurizer: Some(TaskAssignment {
+                    role: "review-judge".to_string(),
+                    plugin: review_cfg.structurizer_plugin.clone(),
+                    weight_override: None,
+                }),
+                autofix: Some(TaskAssignment {
+                    role: "review-judge".to_string(),
+                    plugin: review_cfg.autofix_plugin.clone(),
+                    weight_override: None,
+                }),
+            },
+        },
+        analyzer_prompt: "You are the Change Intent Analyst. Review the PR description, commit messages, issue links, tests, changed files, docs, and surrounding code. Produce a concise review brief for other reviewers:\n1. What behaviour appears intended? (intended_behavior)\n2. What public or internal contracts changed? (contract_changes)\n3. What invariants must still hold? (invariants)\n4. What security, data, performance, concurrency, migration, or compatibility risks are now in scope? (security_scope)\n5. What files, modules, tests, configs, or docs are most important to inspect? (affected_modules)\n6. What would prove this change is correct? (reviewer_checklist)\n\nRespond ONLY with valid JSON matching this schema:\n{\n  \"summary\": \"<overall brief>\",\n  \"intended_behavior\": \"<what the change intends>\",\n  \"focus_items\": [{\"area\":\"<area>\",\"rationale\":\"<why>\"}],\n  \"contract_changes\": [\"<changed contract>\"],\n  \"invariants\": [\"<invariant that must hold>\"],\n  \"security_scope\": \"<security/risk scope note>\",\n  \"trade_offs\": [\"<tradeoff>\"],\n  \"affected_modules\": [\"<file/module path>\"],\n  \"call_chain\": [\"<call chain entry>\"],\n  \"design_patterns\": [\"<pattern>\"],\n  \"reviewer_checklist\": [\"<item>\"],\n}".to_string(),
+        reviewer_prompt: "Perform an exhaustive code review of the changed code. Use the Change Intent brief as the expected behaviour. Assess correctness, security, performance, error handling, edge cases, maintainability, and testing gaps. For every finding provide: severity (Critical|Warning|Info), file and line/range, the violated invariant or expected behaviour, a concrete failure scenario, minimal suggested fix, and a test that would catch it. Only report real issues supported by code evidence. Do not comment on style.".to_string(),
+        judge_prompt: "Produce final review consensus. Preserve only supported, actionable findings. Remove duplicates and style preferences. Mark merge-blocking issues explicitly. Output: verdict (approve|approve with comments|request changes), merge blockers, non-blocking issues, required tests, operational notes, and remaining uncertainty.".to_string(),
+        schema_json: r#"{
+  "type":"object",
+  "required":["findings"],
+  "properties":{
+    "findings":{"type":"array"}
+  }
+}"#.to_string(),
+        render_prompt: None,
+        source: TaskPackSource::BuiltIn,
+    };
+    pack.validate_schema().expect("built-in long review pack should be valid");
     pack
 }
 

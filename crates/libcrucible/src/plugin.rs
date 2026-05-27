@@ -144,6 +144,10 @@ pub trait FocusAnalyzer: Send + Sync {
             call_chain: Vec::new(),
             design_patterns: Vec::new(),
             reviewer_checklist: Vec::new(),
+            intended_behavior: String::new(),
+            contract_changes: Vec::new(),
+            invariants: Vec::new(),
+            security_scope: String::new(),
         })
     }
 }

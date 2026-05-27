@@ -692,6 +692,10 @@ fn fallback_focus(ctx: &ReviewContext, reason: &str) -> FocusAreas {
         call_chain: Vec::new(),
         design_patterns: Vec::new(),
         reviewer_checklist,
+        intended_behavior: String::new(),
+        contract_changes: Vec::new(),
+        invariants: Vec::new(),
+        security_scope: String::new(),
     }
 }
 

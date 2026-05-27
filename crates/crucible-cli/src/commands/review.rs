@@ -75,6 +75,8 @@ pub struct ReviewArgs {
         help = "Git remote to use for --repo base and PR checkout"
     )]
     pub git_remote: String,
+    #[arg(long, help = "Run a fast review with fewer agents (3 core reviewers, 2 rounds)")]
+    pub short: bool,
 }
 
 pub async fn run(args: ReviewArgs) -> Result<()> {
@@ -95,6 +97,10 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         libcrucible::plugins::set_verbose(true);
     }
     let mut cfg = CrucibleConfig::load()?;
+    if args.short {
+        cfg.coordinator.max_rounds = 2;
+        cfg.task_packs.review.short_review = true;
+    }
     if let Some(reviewer) = &args.reviewer {
         cfg.plugins.agents = vec![reviewer.clone()];
         if args.max_rounds.is_none() {

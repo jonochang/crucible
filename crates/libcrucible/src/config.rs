@@ -101,6 +101,16 @@ pub struct ReviewTaskPackConfig {
     pub convergence_plugin: String,
     pub structurizer_plugin: String,
     pub autofix_plugin: String,
+    pub program_semantics_plugin: String,
+    pub maintainer_review_plugin: String,
+    pub security_reliability_plugin: String,
+    pub contrarian_review_plugin: String,
+    pub verification_review_plugin: String,
+    pub requirements_contract_plugin: String,
+    pub test_evidence_plugin: String,
+    pub performance_resource_plugin: String,
+    pub fix_strategy_plugin: String,
+    pub short_review: bool,
 }
 
 impl Default for ReviewTaskPackConfig {
@@ -111,6 +121,16 @@ impl Default for ReviewTaskPackConfig {
             convergence_plugin: "codex".to_string(),
             structurizer_plugin: "codex".to_string(),
             autofix_plugin: "codex".to_string(),
+            program_semantics_plugin: "opencode-glm".to_string(),
+            maintainer_review_plugin: "codex".to_string(),
+            security_reliability_plugin: "opencode-kimi".to_string(),
+            contrarian_review_plugin: "opencode-glm".to_string(),
+            verification_review_plugin: "codex".to_string(),
+            requirements_contract_plugin: "codex".to_string(),
+            test_evidence_plugin: "codex".to_string(),
+            performance_resource_plugin: "opencode-glm".to_string(),
+            fix_strategy_plugin: "codex".to_string(),
+            short_review: false,
         }
     }
 }
@@ -168,7 +188,7 @@ impl Default for CrucibleConfig {
                 docs_max_bytes: 50_000,
             },
             coordinator: CoordinatorConfig {
-                max_rounds: 2,
+                max_rounds: 3,
                 quorum_threshold: 0.75,
                 agent_timeout_secs: 90,
                 devil_advocate: false,
