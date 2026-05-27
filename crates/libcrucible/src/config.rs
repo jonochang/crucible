@@ -123,17 +123,17 @@ impl Default for ReviewTaskPackConfig {
             convergence_plugin: "codex".to_string(),
             structurizer_plugin: "codex".to_string(),
             autofix_plugin: "codex".to_string(),
-            program_semantics_plugin: "opencode-glm".to_string(),
-            maintainer_review_plugin: "codex".to_string(),
+            program_semantics_plugin: "opencode-deepseek".to_string(),
+            maintainer_review_plugin: "opencode-glm".to_string(),
             security_reliability_plugin: "opencode-kimi".to_string(),
-            contrarian_review_plugin: "opencode-glm".to_string(),
-            verification_review_plugin: "codex".to_string(),
-            requirements_contract_plugin: "codex".to_string(),
-            test_evidence_plugin: "codex".to_string(),
-            performance_resource_plugin: "opencode-glm".to_string(),
-            fix_strategy_plugin: "codex".to_string(),
+            contrarian_review_plugin: "opencode-deepseek".to_string(),
+            verification_review_plugin: "opencode-glm".to_string(),
+            requirements_contract_plugin: "opencode-glm".to_string(),
+            test_evidence_plugin: "opencode-glm".to_string(),
+            performance_resource_plugin: "opencode-deepseek".to_string(),
+            fix_strategy_plugin: "opencode-glm".to_string(),
             intent_alignment_plugin: "opencode-glm".to_string(),
-            simplicity_review_plugin: "codex".to_string(),
+            simplicity_review_plugin: "opencode-glm".to_string(),
             short_review: false,
         }
     }
@@ -327,7 +327,7 @@ impl CrucibleConfig {
 
     pub fn load() -> Result<Self> {
         let cwd = std::env::current_dir().context("get current dir")?;
-        if let Some(path) = find_config_path(&cwd) {
+        if let Some(path) = Self::find_config_path(&cwd) {
             return load_from_path(&path);
         }
 
@@ -339,18 +339,18 @@ impl CrucibleConfig {
 
         Ok(Self::default())
     }
-}
 
-fn find_config_path(start: &Path) -> Option<PathBuf> {
-    let mut current = Some(start);
-    while let Some(dir) = current {
-        let candidate = dir.join(".crucible.toml");
-        if candidate.exists() {
-            return Some(candidate);
+    pub fn find_config_path(start: &Path) -> Option<PathBuf> {
+        let mut current = Some(start);
+        while let Some(dir) = current {
+            let candidate = dir.join(".crucible.toml");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            current = dir.parent();
         }
-        current = dir.parent();
+        None
     }
-    None
 }
 
 fn load_from_path(path: &Path) -> Result<CrucibleConfig> {
