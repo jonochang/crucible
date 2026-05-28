@@ -30,6 +30,16 @@ pub struct CliAgentPlugin {
     prompt_template: PromptTemplate,
 }
 
+#[derive(Debug, Clone)]
+pub struct HealthCheckResult {
+    pub agent_id: String,
+    pub command: String,
+    pub reachable: bool,
+    pub json_parsable: bool,
+    pub valid_response: bool,
+    pub error: Option<String>,
+}
+
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 static DEBUG_FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
@@ -66,6 +76,40 @@ impl CliAgentPlugin {
             args: cfg.args.clone(),
             reviewer_focus: role.focus.clone(),
             prompt_template: role.prompt_template.clone(),
+        }
+    }
+
+    pub fn health_check(&self) -> HealthCheckResult {
+        let system = "You are a health check agent. Respond with valid JSON only.".to_string();
+        let user = "Reply with exactly this JSON object: {\"status\":\"ok\"}".to_string();
+        let result = self.run_cli::<serde_json::Value>(system, user);
+        match result {
+            Ok(val) => {
+                let ok = val.get("status").and_then(|v| v.as_str()) == Some("ok")
+                    || val.is_object();
+                HealthCheckResult {
+                    agent_id: self.id.clone(),
+                    command: format!("{} {:?}", self.command, self.args),
+                    reachable: true,
+                    json_parsable: true,
+                    valid_response: ok,
+                    error: None,
+                }
+            }
+            Err(err) => {
+                let msg = format!("{err:#}");
+                let is_spawn = msg.contains("No such file or directory")
+                    || msg.contains("not found")
+                    || msg.contains("No such");
+                HealthCheckResult {
+                    agent_id: self.id.clone(),
+                    command: format!("{} {:?}", self.command, self.args),
+                    reachable: !is_spawn,
+                    json_parsable: false,
+                    valid_response: false,
+                    error: Some(msg),
+                }
+            }
         }
     }
 

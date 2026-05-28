@@ -35,6 +35,7 @@ enum Command {
     PromptEval(commands::prompt_eval::PromptEvalArgs),
     Hook(commands::hook::HookArgs),
     Config(commands::config::ConfigArgs),
+    Doctor(commands::doctor::DoctorArgs),
     Session(commands::session::SessionArgs),
     Version,
 }
@@ -56,6 +57,7 @@ async fn run() -> Result<()> {
         Command::PromptEval(args) => commands::prompt_eval::run(args).await,
         Command::Hook(args) => commands::hook::run(args),
         Command::Config(args) => commands::config::run(args),
+        Command::Doctor(args) => commands::doctor::run(args),
         Command::Session(args) => commands::session::run(args),
         Command::Version => {
             println!("crucible {}", env!("CARGO_PKG_VERSION"));
