@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.41 - 2026-05-28
+
+- Added a generated human review report section with role summaries, per-round/role timings, and prioritized action buckets to review logs and serialized reports.
+
 ## 0.1.32 - 2026-04-13
 
 - Fixed the coordinator’s round comparison logic to use matching integer types, resolving the release build failure introduced by the clean zero-finding early-exit path.

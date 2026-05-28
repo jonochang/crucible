@@ -282,10 +282,10 @@ Behavior:
 - `--github-dry-run` renders the GitHub review overview + inline comments without posting them. Requires a PR target.
 - `--publish-github` posts the structured review draft to GitHub using `gh api`. Requires a PR target.
 - Progress is still appended to `review_report.log` in the current directory for compatibility, and each run also writes scoped artifacts under `.crucible/runs/<run_id>/`.
-- `review_report.log` / `.crucible/runs/<run_id>/progress.log` are human-readable progress streams with timestamps, phase changes, and final report sections.
+- `review_report.log` / `.crucible/runs/<run_id>/progress.log` are human-readable progress streams with timestamps, phase changes, role summaries, timing summaries, and final report sections.
 - `.crucible/runs/<run_id>/debug.log` is for raw diagnostics: prompts, raw agent stdout/stderr, and parser/debug traces.
 - During review, Crucible streams startup header, startup sub-phases (references/history/docs/prechecks), analysis/system context, round status (with durations), convergence, and `[agent-review]` summaries.
-- Final report output includes an `Action Plan`, a `PR Comment Artifact`, and a structured `pr_review_draft` for GitHub publication.
+- Final report output includes a `Human Review Report`, an `Action Plan`, a `PR Comment Artifact`, and a structured `pr_review_draft` for GitHub publication.
 
 ### `crucible prompt-eval`
 

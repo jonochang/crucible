@@ -808,6 +808,10 @@ fn print_report(report: &ReviewReport, issues: &[IssueRow]) {
         println!("\nFinal Analysis:\n{}", final_analysis);
     }
 
+    if let Some(human_report) = &report.human_review_markdown {
+        println!("\nHuman Review Report:\n{}", human_report);
+    }
+
     if let Some(plan) = &report.final_action_plan {
         println!("\nAction Plan:");
         for step in &plan.prioritized_steps {

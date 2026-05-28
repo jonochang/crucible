@@ -44,6 +44,8 @@ pub fn render_report_json(report: &ReviewReport) -> String {
                 "auto_fix": report.auto_fix,
                 "final_action_plan": report.final_action_plan,
                 "pr_comment_markdown": report.pr_comment_markdown,
+                "human_review_markdown": report.human_review_markdown,
+                "run_summary": report.run_summary,
                 "pr_review_draft": report.pr_review_draft,
                 "session_id": report.session_id
             }))
@@ -230,6 +232,10 @@ pub fn write_log_json(w: &mut dyn Write, json: &str) {
 
 /// Write final-analysis and pr-comment sections to a log writer.
 pub fn write_log_report_sections(w: &mut dyn Write, report: &ReviewReport) {
+    if let Some(human_report) = &report.human_review_markdown {
+        let _ = writeln!(w, "[{}] [human-review-report]", log_timestamp());
+        let _ = writeln!(w, "{}", human_report);
+    }
     if let Some(final_analysis) = &report.final_analysis_markdown {
         let _ = writeln!(w, "[{}] [final-analysis]", log_timestamp());
         let _ = writeln!(w, "{}", final_analysis);

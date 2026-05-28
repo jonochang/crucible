@@ -25,6 +25,10 @@ pub struct ReviewReport {
     #[serde(default)]
     pub pr_comment_markdown: Option<String>,
     #[serde(default)]
+    pub human_review_markdown: Option<String>,
+    #[serde(default)]
+    pub run_summary: Option<ReviewRunSummary>,
+    #[serde(default)]
     pub pr_review_draft: Option<PullRequestReviewDraft>,
     pub session_id: Uuid,
 }
@@ -59,10 +63,61 @@ impl ReviewReport {
             auto_fix,
             final_action_plan,
             pr_comment_markdown,
+            human_review_markdown: None,
+            run_summary: None,
             pr_review_draft,
             session_id: run_id,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReviewRunSummary {
+    pub total_duration_secs: f32,
+    pub analyzer_duration_secs: Option<f32>,
+    pub finalize_duration_secs: Option<f32>,
+    pub changed_files: usize,
+    pub changed_lines: usize,
+    pub max_rounds: u8,
+    pub rounds_completed: u8,
+    pub reviewers: Vec<String>,
+    pub role_reviews: Vec<RoleReviewSummary>,
+    pub round_summaries: Vec<RoundReviewSummary>,
+    pub convergence: Vec<ConvergenceReviewSummary>,
+    pub final_judge: Option<FinalJudgeSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleReviewSummary {
+    pub round: u8,
+    pub id: String,
+    pub duration_secs: Option<f32>,
+    pub critical: usize,
+    pub warning: usize,
+    pub info: usize,
+    pub narrative: String,
+    pub result: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoundReviewSummary {
+    pub round: u8,
+    pub duration_secs: f32,
+    pub result: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConvergenceReviewSummary {
+    pub round: u8,
+    pub duration_secs: Option<f32>,
+    pub verdict: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FinalJudgeSummary {
+    pub duration_secs: Option<f32>,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -4,8 +4,9 @@ use crate::context::ReviewContext;
 use crate::plugin::{AgentReviewOutput, PluginRegistry};
 use crate::progress::{ConvergenceVerdict, ProgressEvent, ReviewerState, ReviewerStatus};
 use crate::report::{
-    AgentFailure, CanonicalIssue, ConsensusMap, ConsensusStatus, EvidenceAnchor,
-    FinalActionPlan, Finding, FindingKey, LineSpan, RawFinding, Severity,
+    AgentFailure, CanonicalIssue, ConsensusMap, ConsensusStatus, ConvergenceReviewSummary,
+    EvidenceAnchor, FinalActionPlan, FinalJudgeSummary, Finding, FindingKey, LineSpan, RawFinding,
+    ReviewRunSummary, RoleReviewSummary, RoundReviewSummary, Severity,
 };
 use anyhow::{Result, anyhow};
 use futures::future::{BoxFuture, FutureExt};
@@ -49,6 +50,7 @@ impl Coordinator {
     }
 
     pub async fn run(&mut self, ctx: &ReviewContext) -> Result<crate::report::ReviewReport> {
+        let run_started_at = Instant::now();
         let review_pack = self
             .review_pack
             .clone()
@@ -67,18 +69,20 @@ impl Coordinator {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let changed_lines = count_changed_lines(&ctx.diff);
         let consensus_agents = task_plan
             .rounds
             .iter()
             .map(|round| round.assignments.len())
             .max()
             .unwrap_or(1);
-        self.consensus = ConsensusTracker::new(self.cfg.coordinator.quorum_threshold, consensus_agents);
+        self.consensus =
+            ConsensusTracker::new(self.cfg.coordinator.quorum_threshold, consensus_agents);
         self.emit(ProgressEvent::RunHeader {
             reviewers,
             max_rounds: total_rounds as u8,
             changed_files: ctx.changed_files.len(),
-            changed_lines: count_changed_lines(&ctx.diff),
+            changed_lines,
             convergence_enabled: total_rounds > 1,
             context_enabled: true,
         });
@@ -86,6 +90,7 @@ impl Coordinator {
             phase: "analyzer".to_string(),
         });
         self.emit(ProgressEvent::AnalyzerStart);
+        let analyzer_started_at = Instant::now();
         let mut analyzer_ctx = ctx.into_agent_ctx(None);
         analyzer_ctx.review_pack = Some(review_pack.clone());
         let mut focus = None;
@@ -96,7 +101,9 @@ impl Coordinator {
         let mut agent_failures = Vec::new();
         let analyzer_attempts: u8 = 2;
         if let Some(analyze_assignment) = &task_plan.finalization.analyze {
-            let analyzer = self.registry.instantiate_focus_analyzer(analyze_assignment)?;
+            let analyzer = self
+                .registry
+                .instantiate_focus_analyzer(analyze_assignment)?;
             for attempt in 1..=analyzer_attempts {
                 match analyzer.analyze_focus(&analyzer_ctx).await {
                     Ok(result) => {
@@ -146,6 +153,7 @@ impl Coordinator {
             markdown: render_system_context_markdown(ctx),
         });
         self.emit(ProgressEvent::AnalyzerDone);
+        let analyzer_duration_secs = analyzer_started_at.elapsed().as_secs_f32();
         self.emit(ProgressEvent::PhaseDone {
             phase: "analyzer".to_string(),
         });
@@ -161,6 +169,10 @@ impl Coordinator {
         let mut previous_count = 0usize;
         let mut previous_high_count = 0usize;
         let mut prior_round_findings: HashMap<String, Vec<RawFinding>> = HashMap::new();
+        let mut role_reviews = Vec::new();
+        let mut round_summaries = Vec::new();
+        let mut convergence_summaries = Vec::new();
+        let mut rounds_completed = 0u8;
         self.emit(ProgressEvent::PhaseStart {
             phase: "agent-preflight".to_string(),
         });
@@ -179,6 +191,8 @@ impl Coordinator {
             self.emit(ProgressEvent::PhaseStart {
                 phase: format!("round-{round}"),
             });
+            let round_started_at = Instant::now();
+            let mut round_result = "Completed".to_string();
             self.emit(ProgressEvent::RoundStart {
                 round,
                 total_rounds: total_rounds as u8,
@@ -200,8 +214,9 @@ impl Coordinator {
             });
 
             let mut round_findings: HashMap<String, Vec<RawFinding>> = HashMap::new();
-            let mut pending: FuturesUnordered<BoxFuture<'static, (String, Result<AgentReviewOutput>)>> =
-                FuturesUnordered::new();
+            let mut pending: FuturesUnordered<
+                BoxFuture<'static, (String, Result<AgentReviewOutput>)>,
+            > = FuturesUnordered::new();
             for agent in &active_agents {
                 let agent = agent.clone();
                 dispatch_agent_for_round(
@@ -222,6 +237,9 @@ impl Coordinator {
                     Ok(output) => output,
                     Err(err) => {
                         let err_message = format!("{err:#}");
+                        let elapsed = started_at
+                            .remove(&id)
+                            .map(|start| start.elapsed().as_secs_f32());
                         update_status(&mut statuses, &id, ReviewerState::Error, None);
                         self.emit(ProgressEvent::ParallelStatus {
                             round,
@@ -237,6 +255,16 @@ impl Coordinator {
                             stage: "review".to_string(),
                             round: Some(round),
                             message: err_message,
+                        });
+                        role_reviews.push(RoleReviewSummary {
+                            round,
+                            id,
+                            duration_secs: elapsed,
+                            critical: 0,
+                            warning: 0,
+                            info: 0,
+                            narrative: "Agent failed before producing a review.".to_string(),
+                            result: "Error".to_string(),
                         });
                         continue;
                     }
@@ -257,15 +285,34 @@ impl Coordinator {
                     .remove(&id)
                     .map(|start| start.elapsed().as_secs_f32())
                     .unwrap_or(0.0);
+                role_reviews.push(RoleReviewSummary {
+                    round,
+                    id: id.clone(),
+                    duration_secs: Some(elapsed),
+                    critical: output
+                        .findings
+                        .iter()
+                        .filter(|f| f.severity == Severity::Critical)
+                        .count(),
+                    warning: output
+                        .findings
+                        .iter()
+                        .filter(|f| f.severity == Severity::Warning)
+                        .count(),
+                    info: output
+                        .findings
+                        .iter()
+                        .filter(|f| f.severity == Severity::Info)
+                        .count(),
+                    narrative: output.narrative.clone(),
+                    result: "Completed".to_string(),
+                });
                 update_status(&mut statuses, &id, ReviewerState::Done, Some(elapsed));
                 self.emit(ProgressEvent::ParallelStatus {
                     round,
                     statuses: statuses.clone(),
                 });
-                self.emit(ProgressEvent::AgentDone {
-                    round,
-                    id,
-                });
+                self.emit(ProgressEvent::AgentDone { round, id });
             }
             drop(pending);
             prior_round_findings = round_findings;
@@ -289,9 +336,22 @@ impl Coordinator {
                     verdict: ConvergenceVerdict::Converged,
                     rationale: "No findings to debate; skipping further rounds.".to_string(),
                 });
+                convergence_summaries.push(ConvergenceReviewSummary {
+                    round,
+                    duration_secs: None,
+                    verdict: "CONVERGED".to_string(),
+                    rationale: "No findings to debate; skipping further rounds.".to_string(),
+                });
                 self.emit(ProgressEvent::RoundComplete {
                     round,
                     total_rounds: total_rounds as u8,
+                });
+                rounds_completed = round;
+                round_result = "Completed, converged".to_string();
+                round_summaries.push(RoundReviewSummary {
+                    round,
+                    duration_secs: round_started_at.elapsed().as_secs_f32(),
+                    result: round_result,
                 });
                 self.emit(ProgressEvent::PhaseDone {
                     phase: format!("round-{round}"),
@@ -304,7 +364,10 @@ impl Coordinator {
                     .convergence
                     .as_ref()
                     .unwrap_or(&task_plan.finalization.judge);
-                let convergence_judge = self.registry.instantiate_role_agent(convergence_assignment)?;
+                let convergence_judge = self
+                    .registry
+                    .instantiate_role_agent(convergence_assignment)?;
+                let convergence_started_at = Instant::now();
                 let judge_decision = self
                     .run_with_timeout(
                         convergence_judge.judge_convergence(&agent_ctx, round, &current_findings),
@@ -334,25 +397,42 @@ impl Coordinator {
                         let rationale = if converged {
                             "No net-new findings and no increase in critical risk.".to_string()
                         } else {
-                            "Net-new findings or unresolved high-severity issues remain.".to_string()
+                            "Net-new findings or unresolved high-severity issues remain."
+                                .to_string()
                         };
                         (verdict, rationale)
                     }
                 };
                 let converged = verdict == ConvergenceVerdict::Converged;
+                let convergence_duration_secs =
+                    Some(convergence_started_at.elapsed().as_secs_f32());
 
                 if round_plan.gate && converged && current_high_count > 0 {
+                    let gate_rationale = format!(
+                        "Gate blocked: convergence judge confirmed {} Critical simplicity/intent issue(s) in '{}'. Simplify the change before detailed review.",
+                        current_high_count, round_plan.name
+                    );
                     self.emit(ProgressEvent::ConvergenceJudgment {
                         round,
                         verdict: ConvergenceVerdict::NotConverged,
-                        rationale: format!(
-                            "Gate blocked: convergence judge confirmed {} Critical simplicity/intent issue(s) in '{}'. Simplify the change before detailed review.",
-                            current_high_count, round_plan.name
-                        ),
+                        rationale: gate_rationale.clone(),
+                    });
+                    convergence_summaries.push(ConvergenceReviewSummary {
+                        round,
+                        duration_secs: convergence_duration_secs,
+                        verdict: "NOT_CONVERGED".to_string(),
+                        rationale: gate_rationale,
                     });
                     self.emit(ProgressEvent::RoundComplete {
                         round,
                         total_rounds: total_rounds as u8,
+                    });
+                    rounds_completed = round;
+                    round_result = "Completed, not converged".to_string();
+                    round_summaries.push(RoundReviewSummary {
+                        round,
+                        duration_secs: round_started_at.elapsed().as_secs_f32(),
+                        result: round_result,
                     });
                     self.emit(ProgressEvent::PhaseDone {
                         phase: format!("round-{round}"),
@@ -360,23 +440,40 @@ impl Coordinator {
                     break;
                 }
 
+                let emitted_rationale = if round_plan.gate {
+                    format!(
+                        "Gate '{}' passed: convergence judge found findings uncertain or unconfirmed. Proceeding to detailed review.",
+                        round_plan.name
+                    )
+                } else {
+                    rationale
+                };
                 self.emit(ProgressEvent::ConvergenceJudgment {
                     round,
                     verdict,
-                    rationale: if round_plan.gate {
-                        format!(
-                            "Gate '{}' passed: convergence judge found findings uncertain or unconfirmed. Proceeding to detailed review.",
-                            round_plan.name
-                        )
-                    } else {
-                        rationale
+                    rationale: emitted_rationale.clone(),
+                });
+                convergence_summaries.push(ConvergenceReviewSummary {
+                    round,
+                    duration_secs: convergence_duration_secs,
+                    verdict: match verdict {
+                        ConvergenceVerdict::Converged => "CONVERGED".to_string(),
+                        ConvergenceVerdict::NotConverged => "NOT_CONVERGED".to_string(),
                     },
+                    rationale: emitted_rationale,
                 });
 
                 if converged {
                     self.emit(ProgressEvent::RoundComplete {
                         round,
                         total_rounds: total_rounds as u8,
+                    });
+                    rounds_completed = round;
+                    round_result = "Completed, converged".to_string();
+                    round_summaries.push(RoundReviewSummary {
+                        round,
+                        duration_secs: round_started_at.elapsed().as_secs_f32(),
+                        result: round_result,
                     });
                     self.emit(ProgressEvent::PhaseDone {
                         phase: format!("round-{round}"),
@@ -390,6 +487,12 @@ impl Coordinator {
                 round,
                 total_rounds: total_rounds as u8,
             });
+            rounds_completed = round;
+            round_summaries.push(RoundReviewSummary {
+                round,
+                duration_secs: round_started_at.elapsed().as_secs_f32(),
+                result: round_result,
+            });
             self.emit(ProgressEvent::PhaseDone {
                 phase: format!("round-{round}"),
             });
@@ -402,7 +505,9 @@ impl Coordinator {
                 .structurizer
                 .as_ref()
                 .unwrap_or(&task_plan.finalization.judge);
-            let structurizer = self.registry.instantiate_role_agent(structurizer_assignment)?;
+            let structurizer = self
+                .registry
+                .instantiate_role_agent(structurizer_assignment)?;
             if let Ok(structured) = self
                 .run_with_timeout(
                     structurizer.structurize_issues(&agent_ctx, &findings),
@@ -423,6 +528,8 @@ impl Coordinator {
         self.emit(ProgressEvent::PhaseStart {
             phase: "finalize".to_string(),
         });
+        let finalize_started_at = Instant::now();
+        let mut final_judge = None;
         let auto_fix = if findings.iter().any(|f| f.severity >= Severity::Warning) {
             let autofix_assignment = task_plan
                 .finalization
@@ -430,12 +537,24 @@ impl Coordinator {
                 .as_ref()
                 .unwrap_or(&task_plan.finalization.judge);
             let autofix_agent = self.registry.instantiate_role_agent(autofix_assignment)?;
-            self.run_with_timeout(
-                autofix_agent.summarize(&agent_ctx, &findings),
-                "final_summarize",
-            )
-            .await
-            .ok()
+            let final_judge_started_at = Instant::now();
+            let result = self
+                .run_with_timeout(
+                    autofix_agent.summarize(&agent_ctx, &findings),
+                    "final_summarize",
+                )
+                .await
+                .ok();
+            final_judge = Some(FinalJudgeSummary {
+                duration_secs: Some(final_judge_started_at.elapsed().as_secs_f32()),
+                summary: result
+                    .as_ref()
+                    .map(|auto_fix| auto_fix.explanation.clone())
+                    .unwrap_or_else(|| {
+                        "Final summarize step did not produce a result.".to_string()
+                    }),
+            });
+            result
         } else {
             None
         };
@@ -443,9 +562,8 @@ impl Coordinator {
             self.emit(ProgressEvent::AutoFixReady);
         }
 
-        let final_analysis =
-            render_final_analysis_markdown(&issues, &action_plan, &agent_failures);
-        let report = crate::report::ReviewReport::from_findings(
+        let final_analysis = render_final_analysis_markdown(&issues, &action_plan, &agent_failures);
+        let mut report = crate::report::ReviewReport::from_findings(
             self.run_id,
             &findings,
             agent_failures,
@@ -460,6 +578,32 @@ impl Coordinator {
             Some(pr_comment),
             Some(pr_review_draft),
         );
+        let run_summary = ReviewRunSummary {
+            total_duration_secs: run_started_at.elapsed().as_secs_f32(),
+            analyzer_duration_secs: Some(analyzer_duration_secs),
+            finalize_duration_secs: Some(finalize_started_at.elapsed().as_secs_f32()),
+            changed_files: ctx.changed_files.len(),
+            changed_lines,
+            max_rounds: total_rounds as u8,
+            rounds_completed,
+            reviewers: task_plan
+                .rounds
+                .first()
+                .map(|round| {
+                    round
+                        .assignments
+                        .iter()
+                        .map(|assignment| assignment.runtime_id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            role_reviews,
+            round_summaries,
+            convergence: convergence_summaries,
+            final_judge,
+        };
+        report.run_summary = Some(run_summary);
+        report.human_review_markdown = Some(render_human_review_markdown(&report, ctx));
         self.emit(ProgressEvent::Completed(report.clone()));
         self.emit(ProgressEvent::PhaseDone {
             phase: "finalize".to_string(),
@@ -702,6 +846,257 @@ fn render_final_analysis_markdown(
     out
 }
 
+fn render_human_review_markdown(
+    report: &crate::report::ReviewReport,
+    ctx: &ReviewContext,
+) -> String {
+    let mut out = String::from("# Human Review Report\n\n");
+    let Some(summary) = &report.run_summary else {
+        out.push_str("Run summary metadata was not captured for this report.\n");
+        return out;
+    };
+
+    out.push_str(&format!("Run: `{}`  \n", report.run_id));
+    out.push_str(&format!(
+        "Overall duration: {}  \n",
+        format_report_duration(summary.total_duration_secs)
+    ));
+    out.push_str(&format!("Verdict: {:?}\n\n", report.verdict));
+
+    out.push_str("## Scope\n\n");
+    out.push_str(&format!("- Changed files: {}\n", summary.changed_files));
+    out.push_str(&format!("- Changed lines: {}\n", summary.changed_lines));
+    out.push_str(&format!(
+        "- Reviewers: {}\n",
+        if summary.reviewers.is_empty() {
+            "none".to_string()
+        } else {
+            summary
+                .reviewers
+                .iter()
+                .map(|reviewer| format!("`{reviewer}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    ));
+    out.push_str(&format!("- Max rounds: {}\n", summary.max_rounds));
+    out.push_str(&format!(
+        "- Actual rounds completed: {}\n",
+        summary.rounds_completed
+    ));
+    out.push_str(&format!(
+        "- Agent failures: {}\n",
+        report.agent_failures.len()
+    ));
+    if !ctx.gathered.prechecks.is_empty() {
+        let passed = ctx
+            .gathered
+            .prechecks
+            .iter()
+            .filter(|signal| {
+                matches!(
+                    signal.status,
+                    crate::context::precheck::PrecheckStatus::Pass
+                )
+            })
+            .count();
+        out.push_str(&format!(
+            "- Prechecks: {passed}/{} passed\n",
+            ctx.gathered.prechecks.len()
+        ));
+    }
+
+    if !ctx.changed_files.is_empty() {
+        out.push_str("\nAffected files:\n\n");
+        for file in &ctx.changed_files {
+            out.push_str(&format!("- `{}`\n", file.display()));
+        }
+    }
+
+    out.push_str("\n## Timing Summary\n\n");
+    out.push_str("| Phase / role | Duration | Result |\n");
+    out.push_str("| --- | ---: | --- |\n");
+    if let Some(duration) = summary.analyzer_duration_secs {
+        out.push_str(&format!(
+            "| Analyzer | {} | Completed |\n",
+            format_report_duration(duration)
+        ));
+    }
+    for round in &summary.round_summaries {
+        out.push_str(&format!(
+            "| Round {} total | {} | {} |\n",
+            round.round,
+            format_report_duration(round.duration_secs),
+            round.result
+        ));
+        for role in summary
+            .role_reviews
+            .iter()
+            .filter(|role| role.round == round.round)
+        {
+            let total = role.critical + role.warning + role.info;
+            out.push_str(&format!(
+                "| `{}` | {} | {} findings: {} Critical, {} Warning, {} Info |\n",
+                role.id,
+                role.duration_secs
+                    .map(format_report_duration)
+                    .unwrap_or_else(|| "unknown".to_string()),
+                total,
+                role.critical,
+                role.warning,
+                role.info
+            ));
+        }
+    }
+    for convergence in &summary.convergence {
+        out.push_str(&format!(
+            "| Convergence judge, round {} | {} | {} |\n",
+            convergence.round,
+            convergence
+                .duration_secs
+                .map(format_report_duration)
+                .unwrap_or_else(|| "unknown".to_string()),
+            convergence.verdict
+        ));
+    }
+    if let Some(final_judge) = &summary.final_judge {
+        out.push_str(&format!(
+            "| Final review judge | {} | Completed |\n",
+            final_judge
+                .duration_secs
+                .map(format_report_duration)
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
+    }
+    if let Some(duration) = summary.finalize_duration_secs {
+        out.push_str(&format!(
+            "| Finalize phase | {} | Completed |\n",
+            format_report_duration(duration)
+        ));
+    }
+
+    out.push_str("\n## Role Summaries\n\n");
+    if let Some(analysis) = &report.analysis_markdown {
+        out.push_str("### Analyzer\n\n");
+        out.push_str(&summarize_markdown_paragraph(analysis));
+        out.push_str("\n\n");
+    }
+    for role in &summary.role_reviews {
+        out.push_str(&format!("### {}\n\n", role.id));
+        out.push_str(&format!(
+            "Round {}. Duration: {}. Findings: {} Critical, {} Warning, {} Info.\n\n",
+            role.round,
+            role.duration_secs
+                .map(format_report_duration)
+                .unwrap_or_else(|| "unknown".to_string()),
+            role.critical,
+            role.warning,
+            role.info
+        ));
+        out.push_str(&role.narrative);
+        out.push_str("\n\n");
+    }
+    for convergence in &summary.convergence {
+        out.push_str(&format!(
+            "### Convergence Judge, Round {}\n\n",
+            convergence.round
+        ));
+        out.push_str(&format!("Verdict: `{}`.\n\n", convergence.verdict));
+        out.push_str(&convergence.rationale);
+        out.push_str("\n\n");
+    }
+    if let Some(final_judge) = &summary.final_judge {
+        out.push_str("### Final Review Judge\n\n");
+        out.push_str(&final_judge.summary);
+        out.push_str("\n\n");
+    }
+
+    out.push_str("## Prioritized Actions\n\n");
+    let critical = report
+        .issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::Critical)
+        .collect::<Vec<_>>();
+    let warning = report
+        .issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::Warning)
+        .collect::<Vec<_>>();
+    let info = report
+        .issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::Info)
+        .collect::<Vec<_>>();
+
+    out.push_str("### Must Fix Before Merge\n\n");
+    render_action_items(&mut out, &critical);
+    out.push_str("\n### Should Fix Soon\n\n");
+    render_action_items(&mut out, &warning);
+    out.push_str("\n### Operational / Cleanup\n\n");
+    render_action_items(&mut out, &info);
+
+    if !report.agent_failures.is_empty() {
+        out.push_str("\n## Agent Execution Issues\n\n");
+        for failure in &report.agent_failures {
+            let round = failure
+                .round
+                .map(|round| format!(" round {round}"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "- `{}` [{}{}]: {}\n",
+                failure.agent, failure.stage, round, failure.message
+            ));
+        }
+    }
+
+    out.push_str("\n## Residual Risk\n\n");
+    if report.issues.is_empty() {
+        out.push_str("No residual review issues were reported.\n");
+    } else {
+        out.push_str(
+            "Address the must-fix items first. Remaining warnings and cleanup items should be triaged before release if they affect operator trust, data integrity, or test confidence.\n",
+        );
+    }
+    out
+}
+
+fn render_action_items(out: &mut String, issues: &[&CanonicalIssue]) {
+    if issues.is_empty() {
+        out.push_str("- None.\n");
+        return;
+    }
+    for issue in issues {
+        let loc = match (&issue.file, issue.line_start) {
+            (Some(file), Some(line)) => format!("{}:{}", file.display(), line),
+            (Some(file), None) => file.display().to_string(),
+            _ => "<unknown>".to_string(),
+        };
+        out.push_str(&format!("- {} (`{}`)\n", issue.title, loc));
+        if let Some(fix) = &issue.suggested_fix {
+            out.push_str(&format!("  Suggested fix: {}\n", fix));
+        }
+    }
+}
+
+fn summarize_markdown_paragraph(markdown: &str) -> String {
+    markdown
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with('-'))
+        .unwrap_or("Analyzer context was captured in the structured report.")
+        .to_string()
+}
+
+fn format_report_duration(seconds: f32) -> String {
+    if seconds >= 60.0 {
+        let minutes = (seconds / 60.0).floor() as u32;
+        let seconds = (seconds % 60.0).round() as u32;
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds:.1}s")
+    }
+}
+
 fn fallback_focus(ctx: &ReviewContext, reason: &str) -> FocusAreas {
     let mut focus_items = Vec::new();
     for file in ctx.changed_files.iter().take(5) {
@@ -712,16 +1107,20 @@ fn fallback_focus(ctx: &ReviewContext, reason: &str) -> FocusAreas {
     }
     let mut reviewer_checklist = Vec::new();
     if !ctx.gathered.prechecks.is_empty() {
-        reviewer_checklist.push("Validate deterministic precheck failures or warnings.".to_string());
+        reviewer_checklist
+            .push("Validate deterministic precheck failures or warnings.".to_string());
     }
-    reviewer_checklist.push("Review changed files for correctness, regressions, and missing tests.".to_string());
+    reviewer_checklist
+        .push("Review changed files for correctness, regressions, and missing tests.".to_string());
     FocusAreas {
         summary: format!(
             "Analyzer fallback in use because the analyzer failed: {}",
             reason
         ),
         focus_items,
-        trade_offs: vec!["Analyzer-generated prioritization was unavailable for this run.".to_string()],
+        trade_offs: vec![
+            "Analyzer-generated prioritization was unavailable for this run.".to_string(),
+        ],
         affected_modules: ctx
             .changed_files
             .iter()
@@ -878,7 +1277,11 @@ mod tests {
             + &"+y\n".repeat(700);
         let chunks = chunk_diff(&diff, 500, 4);
         assert!(chunks.len() >= 2);
-        assert!(chunks.iter().any(|chunk| chunk.contains("diff --git a/b.rs b/b.rs")));
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.contains("diff --git a/b.rs b/b.rs"))
+        );
     }
 
     #[test]

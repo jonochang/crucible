@@ -1442,6 +1442,19 @@ fn full_report_artifact_written(world: &mut CliWorld) {
         json.get("analysis_markdown").is_some(),
         "analysis_markdown missing"
     );
+    let human = json
+        .get("human_review_markdown")
+        .and_then(|value| value.as_str())
+        .expect("human_review_markdown missing");
+    assert!(
+        human.contains("# Human Review Report"),
+        "human report heading missing"
+    );
+    assert!(
+        human.contains("## Timing Summary"),
+        "human report timing summary missing"
+    );
+    assert!(json.get("run_summary").is_some(), "run_summary missing");
 }
 
 #[then("run-scoped artifacts are written")]
@@ -1451,15 +1464,25 @@ fn run_scoped_artifacts_are_written(world: &mut CliWorld) {
     assert!(runs_dir.exists(), "run-scoped artifact directory missing");
     let mut found_progress = false;
     let mut found_report = false;
+    let mut found_human_report_section = false;
     for entry in std::fs::read_dir(runs_dir).expect("read run artifacts dir") {
         let entry = entry.expect("run entry");
         if !entry.path().is_dir() {
             continue;
         }
-        found_progress |= entry.path().join("progress.log").exists();
+        let progress_path = entry.path().join("progress.log");
+        if progress_path.exists() {
+            found_progress = true;
+            let raw = std::fs::read_to_string(&progress_path).expect("read progress log");
+            found_human_report_section |= raw.contains("[human-review-report]");
+        }
         found_report |= entry.path().join("report.json").exists();
     }
     assert!(found_progress, "run-scoped progress log missing");
+    assert!(
+        found_human_report_section,
+        "human review report section missing from progress log"
+    );
     assert!(found_report, "run-scoped report missing");
 }
 
