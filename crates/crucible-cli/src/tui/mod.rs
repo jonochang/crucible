@@ -513,7 +513,8 @@ fn render_review<'a>(report: Option<&'a ReviewReport>, status: Option<&'a str>) 
 }
 
 struct ReviewLog {
-    sinks: Vec<std::fs::File>,
+    legacy_human_report: std::fs::File,
+    scoped_progress: std::fs::File,
 }
 
 fn open_review_log(artifacts: &libcrucible::artifacts::RunArtifacts) -> Result<ReviewLog> {
@@ -527,26 +528,31 @@ fn open_review_log(artifacts: &libcrucible::artifacts::RunArtifacts) -> Result<R
         .append(true)
         .open(&artifacts.progress_log)?;
     Ok(ReviewLog {
-        sinks: vec![legacy, scoped],
+        legacy_human_report: legacy,
+        scoped_progress: scoped,
     })
 }
 
 fn write_log_event(log: &mut ReviewLog, run_id: uuid::Uuid, event: &ProgressEvent) {
-    for sink in &mut log.sinks {
-        let _ = write!(sink, "[run:{}] ", run_id);
-        log_helpers::write_log_event(sink, event);
-    }
+    let sink = &mut log.scoped_progress;
+    let _ = write!(sink, "[run:{}] ", run_id);
+    log_helpers::write_log_event(sink, event);
 }
 
 fn write_log_json(log: &mut ReviewLog, run_id: uuid::Uuid, json: &str) {
-    for sink in &mut log.sinks {
-        let _ = writeln!(sink, "[run:{}]", run_id);
-        log_helpers::write_log_json(sink, json);
-    }
+    let sink = &mut log.scoped_progress;
+    let _ = writeln!(sink, "[run:{}]", run_id);
+    log_helpers::write_log_json(sink, json);
 }
 
 fn write_log_report_sections(log: &mut ReviewLog, run_id: uuid::Uuid, report: &ReviewReport) {
-    for sink in &mut log.sinks {
+    if report.human_review_markdown.is_some() {
+        let sink = &mut log.legacy_human_report;
+        let _ = writeln!(sink, "[run:{}]", run_id);
+        log_helpers::write_human_review_report(sink, report);
+    }
+    {
+        let sink = &mut log.scoped_progress;
         let _ = writeln!(sink, "[run:{}]", run_id);
         log_helpers::write_log_report_sections(sink, report);
     }

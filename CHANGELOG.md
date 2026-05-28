@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.42 - 2026-05-28
+
+- Changed `review_report.log` to retain only the human review report section for legacy compatibility, while run-scoped `progress.log` keeps the full lifecycle output.
+
 ## 0.1.41 - 2026-05-28
 
 - Added a generated human review report section with role summaries, per-round/role timings, and prioritized action buckets to review logs and serialized reports.

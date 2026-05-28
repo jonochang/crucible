@@ -48,11 +48,12 @@ Crucible emits and logs these lifecycle events:
 - `Completed`
 - `Canceled`
 
-Non-TTY output prints deterministic lines to stderr and appends the same lifecycle to `review_report.log`.
+Non-TTY output prints deterministic lines to stderr and appends the same lifecycle to `.crucible/runs/<run_id>/progress.log`.
 Each run also writes scoped artifacts under `.crucible/runs/<run_id>/`:
 - `progress.log`
 - `report.json`
 - `debug.log` when `--debug` is enabled
+The legacy `review_report.log` keeps only the human review report section for compatibility.
 
 ## Non-TTY Output Shape
 

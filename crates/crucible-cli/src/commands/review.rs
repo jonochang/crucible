@@ -1263,7 +1263,8 @@ fn render_spinner_status(event: &ProgressEvent) {
 }
 
 struct ReviewLog {
-    sinks: Vec<File>,
+    legacy_human_report: File,
+    scoped_progress: File,
 }
 
 fn open_review_log(artifacts: &libcrucible::artifacts::RunArtifacts) -> Result<ReviewLog> {
@@ -1277,31 +1278,38 @@ fn open_review_log(artifacts: &libcrucible::artifacts::RunArtifacts) -> Result<R
         .append(true)
         .open(&artifacts.progress_log)?;
     Ok(ReviewLog {
-        sinks: vec![legacy, scoped],
+        legacy_human_report: legacy,
+        scoped_progress: scoped,
     })
 }
 
 fn write_log_event(log: &Arc<Mutex<ReviewLog>>, run_id: Uuid, event: &ProgressEvent) -> Result<()> {
     let mut file = log.lock().expect("log lock");
-    for sink in &mut file.sinks {
-        let _ = write!(sink, "[run:{}] ", run_id);
-        log_helpers::write_log_event(sink, event);
-    }
+    let sink = &mut file.scoped_progress;
+    let _ = write!(sink, "[run:{}] ", run_id);
+    log_helpers::write_log_event(sink, event);
     Ok(())
 }
 
 fn write_log_json(log: &Arc<Mutex<ReviewLog>>, run_id: Uuid, json: &str) {
     if let Ok(mut file) = log.lock() {
-        for sink in &mut file.sinks {
-            let _ = writeln!(sink, "[run:{}]", run_id);
-            log_helpers::write_log_json(sink, json);
-        }
+        let sink = &mut file.scoped_progress;
+        let _ = writeln!(sink, "[run:{}]", run_id);
+        log_helpers::write_log_json(sink, json);
     }
 }
 
 fn write_log_report_sections(log: &Arc<Mutex<ReviewLog>>, run_id: Uuid, report: &ReviewReport) {
     if let Ok(mut file) = log.lock() {
-        for sink in &mut file.sinks {
+        {
+            let sink = &mut file.legacy_human_report;
+            if report.human_review_markdown.is_some() {
+                let _ = writeln!(sink, "[run:{}]", run_id);
+                log_helpers::write_human_review_report(sink, report);
+            }
+        }
+        {
+            let sink = &mut file.scoped_progress;
             let _ = writeln!(sink, "[run:{}]", run_id);
             log_helpers::write_log_report_sections(sink, report);
         }

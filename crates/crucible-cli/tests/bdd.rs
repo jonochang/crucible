@@ -1457,6 +1457,30 @@ fn full_report_artifact_written(world: &mut CliWorld) {
     assert!(json.get("run_summary").is_some(), "run_summary missing");
 }
 
+#[then("the legacy review report contains only the human report")]
+fn legacy_review_report_contains_only_human_report(world: &mut CliWorld) {
+    let repo_dir = world.repo_dir.as_ref().expect("repo dir");
+    let report_path = repo_dir.join("review_report.log");
+    let raw = std::fs::read_to_string(&report_path).expect("read legacy review report");
+    assert!(
+        raw.contains("[human-review-report]"),
+        "human review report section missing from legacy review report"
+    );
+    for tag in [
+        "[report]",
+        "[progress]",
+        "[analysis]",
+        "[system-context]",
+        "[final-analysis]",
+        "[pr-comment]",
+    ] {
+        assert!(
+            !raw.contains(tag),
+            "legacy review report still contains {tag}"
+        );
+    }
+}
+
 #[then("run-scoped artifacts are written")]
 fn run_scoped_artifacts_are_written(world: &mut CliWorld) {
     let repo_dir = world.repo_dir.as_ref().expect("repo dir");

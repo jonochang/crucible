@@ -230,7 +230,16 @@ pub fn write_log_json(w: &mut dyn Write, json: &str) {
     let _ = w.flush();
 }
 
-/// Write final-analysis and pr-comment sections to a log writer.
+/// Write the human review report section to a log writer.
+pub fn write_human_review_report(w: &mut dyn Write, report: &ReviewReport) {
+    if let Some(human_report) = &report.human_review_markdown {
+        let _ = writeln!(w, "[{}] [human-review-report]", log_timestamp());
+        let _ = writeln!(w, "{}", human_report);
+    }
+    let _ = w.flush();
+}
+
+/// Write the human review report plus final-analysis and pr-comment sections to a log writer.
 pub fn write_log_report_sections(w: &mut dyn Write, report: &ReviewReport) {
     if let Some(human_report) = &report.human_review_markdown {
         let _ = writeln!(w, "[{}] [human-review-report]", log_timestamp());

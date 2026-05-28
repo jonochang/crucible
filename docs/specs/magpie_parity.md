@@ -25,7 +25,7 @@ Convenor emits:
 - `AnalysisReady` (markdown rendered in UX)
 - `SystemContextReady` (changed files + gathered context counts)
 
-Analyzer output is logged to `review_report.log`.
+Analyzer output is logged to `.crucible/runs/<run_id>/progress.log`.
 
 ## Reviewer Prompt Design
 

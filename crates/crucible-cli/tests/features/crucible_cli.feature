@@ -76,6 +76,7 @@ Feature: Crucible CLI
     And a mock crucible config
     When I run review with report export
     Then the full report artifact is written
+    And the legacy review report contains only the human report
     And run-scoped artifacts are written
 
   Scenario: Review skips clean local target
