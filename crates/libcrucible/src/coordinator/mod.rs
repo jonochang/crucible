@@ -392,7 +392,7 @@ impl Coordinator {
                         )
                     } else {
                         let converged = round > 1
-                            && current_count == previous_count
+                            && current_count <= previous_count
                             && current_high_count <= previous_high_count;
                         let verdict = if converged {
                             ConvergenceVerdict::Converged
@@ -400,9 +400,9 @@ impl Coordinator {
                             ConvergenceVerdict::NotConverged
                         };
                         let rationale = if converged {
-                            "No net-new findings and no increase in critical risk.".to_string()
+                            "Reviewers agree on the set of valid findings; no new material disagreement.".to_string()
                         } else {
-                            "Net-new findings or unresolved high-severity issues remain."
+                            "Reviewers still disagree or new findings are emerging; another round needed."
                                 .to_string()
                         };
                         (verdict, rationale)

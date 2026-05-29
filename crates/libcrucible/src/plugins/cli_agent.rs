@@ -932,7 +932,7 @@ impl AgentPlugin for CliAgentPlugin {
             .map(|pack| pack.judge_prompt.as_str())
             .unwrap_or("Produce final review consensus and convergence judgments for agreed findings.");
         let system = format!(
-            "You are a strict convergence judge for multi-agent code review.\n{}\nPrimary lens: {}.\nRespond ONLY with valid JSON: {{\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}}.\nUse CONVERGED only when there are no unresolved material disagreements and no net-new high-severity risk requiring another round.",
+            "You are a convergence judge for multi-agent code review.\n{}\nPrimary lens: {}.\nRespond ONLY with valid JSON: {{\"verdict\":\"CONVERGED|NOT_CONVERGED\",\"rationale\":\"...\"}}.\nUse CONVERGED when reviewers agree on which findings are valid, even if those findings describe unfixed bugs. The review identifies issues for engineers — convergence means the set of agreed-upon findings is stable, not that the code has been changed. Use NOT_CONVERGED only when reviewers still materially disagree about whether a finding is real or when new genuinely distinct high-severity issues are still being discovered that previous rounds did not cover at all.",
             judge_prompt, self.reviewer_focus
         );
         let user = format!(
