@@ -118,22 +118,22 @@ pub struct ReviewTaskPackConfig {
 impl Default for ReviewTaskPackConfig {
     fn default() -> Self {
         Self {
-            analyzer_plugin: "opencode-deepseek".to_string(),
+            analyzer_plugin: "opencode-glm".to_string(),
             judge_plugin: "codex".to_string(),
             convergence_plugin: "claude-code".to_string(),
             structurizer_plugin: "claude-code".to_string(),
             autofix_plugin: "codex".to_string(),
-            program_semantics_plugin: "opencode-deepseek".to_string(),
+            program_semantics_plugin: "claude-code".to_string(),
             maintainer_review_plugin: "codex".to_string(),
-            security_reliability_plugin: "claude-code".to_string(),
+            security_reliability_plugin: "opencode-glm".to_string(),
             contrarian_review_plugin: "opencode-deepseek".to_string(),
             verification_review_plugin: "opencode-glm".to_string(),
             requirements_contract_plugin: "opencode-deepseek".to_string(),
             test_evidence_plugin: "opencode-glm".to_string(),
-            performance_resource_plugin: "opencode-deepseek".to_string(),
+            performance_resource_plugin: "opencode-glm".to_string(),
             fix_strategy_plugin: "opencode-deepseek".to_string(),
             intent_alignment_plugin: "opencode-glm".to_string(),
-            simplicity_review_plugin: "opencode-glm".to_string(),
+            simplicity_review_plugin: "opencode-deepseek".to_string(),
             short_review: false,
         }
     }
