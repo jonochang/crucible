@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.46 - 2026-05-29
+
+- Tuned role-plugin defaults: analyzer→glm, simplicity→deepseek, program-semantics→claude, security-reliability→glm, performance-resource→glm.
+
 ## 0.1.45 - 2026-05-29
 
 - Added graceful interrupt handling: Ctrl+C now signals the coordinator to wrap up in-progress work, kill stuck subprocesses, and generate a partial human review report instead of hard-aborting and losing all results.
