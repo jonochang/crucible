@@ -12,6 +12,7 @@ use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -207,17 +208,29 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
             }
         });
 
-        let report = tokio::select! {
+        let (report, was_cancelled) = tokio::select! {
             res = &mut review_handle => {
                 let report = res??;
                 let _ = progress_handle.await;
-                report
+                (report, false)
             }
             _ = tokio::signal::ctrl_c() => {
                 emit_progress(artifacts.run_id, &ProgressEvent::Canceled);
                 let _ = write_log_event(&log, artifacts.run_id, &ProgressEvent::Canceled);
-                review_handle.abort();
-                return Ok(CommandExit::Exit(130));
+                libcrucible::plugins::set_cancel_flag();
+                match tokio::time::timeout(
+                    Duration::from_secs(30),
+                    &mut review_handle,
+                ).await {
+                    Ok(Ok(Ok(report))) => {
+                        let _ = progress_handle.await;
+                        (report, true)
+                    }
+                    _ => {
+                        review_handle.abort();
+                        return Ok(CommandExit::Exit(130));
+                    }
+                }
             }
         };
 
@@ -242,6 +255,9 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
                     args.publish_github,
                     true,
                 )?;
+            }
+            if was_cancelled {
+                return Ok(CommandExit::Exit(130));
             }
             return Ok(CommandExit::Done);
         }
@@ -272,6 +288,10 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
                 args.publish_github,
                 false,
             )?;
+        }
+
+        if was_cancelled {
+            return Ok(CommandExit::Exit(130));
         }
 
         if args.hook {

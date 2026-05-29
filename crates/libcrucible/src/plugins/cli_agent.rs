@@ -19,6 +19,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct CliAgentPlugin {
@@ -45,6 +46,7 @@ static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 static DEBUG_FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
 static PROGRESS_TX: OnceLock<Mutex<Option<tokio::sync::mpsc::UnboundedSender<ProgressEvent>>>> =
     OnceLock::new();
+static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
 pub fn set_verbose(enabled: bool) {
     VERBOSE.store(enabled, Ordering::Relaxed);
@@ -65,6 +67,18 @@ pub fn set_progress_sender(
     let mut guard = lock.lock().map_err(|_| anyhow!("progress sender lock poisoned"))?;
     *guard = tx;
     Ok(())
+}
+
+pub fn set_cancel_flag() {
+    CANCEL_FLAG.store(true, Ordering::Relaxed);
+}
+
+pub fn clear_cancel_flag() {
+    CANCEL_FLAG.store(false, Ordering::Relaxed);
+}
+
+pub(crate) fn is_canceled() -> bool {
+    CANCEL_FLAG.load(Ordering::Relaxed)
 }
 
 impl CliAgentPlugin {
@@ -242,7 +256,23 @@ impl CliAgentPlugin {
             }
         });
 
-        let status = child.wait().context("wait for CLI output")?;
+        let child_id = child.id();
+        let status = loop {
+            if is_canceled() {
+                debug_log_line(&format!("[{}] cancel requested, killing child process", self.id));
+                kill_child(child_id);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
+                Err(e) => {
+                    return Err(anyhow!("wait on CLI process failed: {e}"));
+                }
+            }
+        };
 
         stdout_thread.join().ok();
         stderr_thread.join().ok();
@@ -255,6 +285,10 @@ impl CliAgentPlugin {
         drop(stderr_lock);
 
         if !status.success() {
+            if is_canceled() {
+                debug_log_line(&format!("[{}] cancelled by user", self.id));
+                return Err(anyhow!("cancelled"));
+            }
             debug_log_line(&format!(
                 "[{}] command failed with stderr:\n{}",
                 self.id, stderr
@@ -531,6 +565,22 @@ fn timestamp_string() -> String {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(d) => format!("{}.{:03}", d.as_secs(), d.subsec_millis()),
         Err(_) => "0.000".to_string(),
+    }
+}
+
+fn kill_child(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .output();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output();
     }
 }
 

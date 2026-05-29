@@ -50,6 +50,7 @@ impl Coordinator {
     }
 
     pub async fn run(&mut self, ctx: &ReviewContext) -> Result<crate::report::ReviewReport> {
+        crate::plugins::cli_agent::clear_cancel_flag();
         let run_started_at = Instant::now();
         let review_pack = self
             .review_pack
@@ -180,6 +181,10 @@ impl Coordinator {
             phase: "agent-preflight".to_string(),
         });
         for (round_idx, round_plan) in task_plan.rounds.iter().take(total_rounds).enumerate() {
+            if crate::plugins::cli_agent::is_canceled() {
+                self.emit(ProgressEvent::Canceled);
+                break;
+            }
             let round = (round_idx + 1) as u8;
             self.snapshotter.freeze_round(round, &HashMap::new());
             let active_agents = round_plan

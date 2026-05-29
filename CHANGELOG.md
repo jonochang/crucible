@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.45 - 2026-05-29
+
+- Added graceful interrupt handling: Ctrl+C now signals the coordinator to wrap up in-progress work, kill stuck subprocesses, and generate a partial human review report instead of hard-aborting and losing all results.
+
 ## 0.1.44 - 2026-05-29
 
 - Added live streaming of sub-agent output (stdout) to the TUI transcript so users can see what agents are doing in real time instead of waiting for a single result after the process exits.

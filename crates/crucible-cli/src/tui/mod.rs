@@ -102,6 +102,8 @@ pub async fn run_review_tui(
     let mut spinner_idx: usize = 0;
     let mut exit_code: Option<i32> = None;
     let mut transcript_seq: u64 = 0;
+    let mut cancel_requested = false;
+    let mut cancel_at = Instant::now();
 
     loop {
         while let Ok(event) = rx.try_recv() {
@@ -272,10 +274,14 @@ pub async fn run_review_tui(
                     write_log_report_sections(&mut log, artifacts.run_id, rep);
                     report = Some(rep.clone());
                     screen = Screen::Review;
-                    if !interactive {
-                        exit_code = Some(match rep.verdict {
-                            Verdict::Block => 1,
-                            _ => 0,
+                    if cancel_requested || !interactive {
+                        exit_code = Some(if cancel_requested {
+                            130
+                        } else {
+                            match rep.verdict {
+                                Verdict::Block => 1,
+                                _ => 0,
+                            }
                         });
                     }
                 }
@@ -361,22 +367,38 @@ pub async fn run_review_tui(
                             _ => {}
                         },
                         _ => match key.code {
-                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => break,
+                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                                if cancel_requested {
+                                    exit_code = Some(130);
+                                }
+                                break;
+                            }
                             _ => {}
                         },
                     }
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
                     {
+                        if cancel_requested {
+                            write_log_event(&mut log, artifacts.run_id, &ProgressEvent::Canceled);
+                            exit_code = Some(130);
+                            break;
+                        }
+                        libcrucible::plugins::set_cancel_flag();
                         write_log_event(&mut log, artifacts.run_id, &ProgressEvent::Canceled);
-                        exit_code = Some(130);
-                        break;
+                        cancel_requested = true;
+                        cancel_at = Instant::now();
                     }
                 }
             }
         }
 
         if exit_code.is_some() {
+            break;
+        }
+
+        if cancel_requested && cancel_at.elapsed() > Duration::from_secs(30) {
+            exit_code = Some(130);
             break;
         }
 
