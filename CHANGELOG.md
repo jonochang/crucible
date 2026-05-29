@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.47 - 2026-05-29
+
+- Changed convergence semantics: convergence now means reviewers agree on the set of valid findings, not that issues have been fixed between rounds. The judge prompt, fallback heuristic, and role descriptions all reflect this. Fixes excessive NOT_CONVERGED verdicts in multi-round reviews.
+
 ## 0.1.46 - 2026-05-29
 
 - Tuned role-plugin defaults: analyzer→glm, simplicity→deepseek, program-semantics→claude, security-reliability→glm, performance-resource→glm.
