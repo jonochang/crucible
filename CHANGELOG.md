@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.43 - 2026-05-29
+
+- Fixed opencode agent "Argument list too long" (E2BIG) errors on large diffs by piping the prompt through stdin instead of passing it as a command-line argument, avoiding the kernel ARG_MAX limit.
+
 ## 0.1.42 - 2026-05-28
 
 - Changed `review_report.log` to retain only the human review report section for legacy compatibility, while run-scoped `progress.log` keeps the full lifecycle output.

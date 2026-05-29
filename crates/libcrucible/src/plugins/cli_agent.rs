@@ -171,13 +171,11 @@ impl CliAgentPlugin {
                 if !has_format_flag {
                     cmd.args(["--format", "json"]);
                 }
-                cmd.arg(&prompt);
             } else {
                 cmd.arg("run");
                 if !has_format_flag {
                     cmd.args(["--format", "json"]);
                 }
-                cmd.arg(&prompt);
             }
         }
 
@@ -186,7 +184,7 @@ impl CliAgentPlugin {
             .unwrap_or_else(|_| "<unknown cwd>".to_string());
         let path_env = std::env::var("PATH").unwrap_or_else(|_| "<PATH unset>".to_string());
         let mut child = cmd
-            .stdin(if is_gemini || is_opencode {
+            .stdin(if is_gemini {
                 Stdio::null()
             } else {
                 Stdio::piped()
@@ -203,7 +201,7 @@ impl CliAgentPlugin {
                 anyhow!(details)
             })?;
 
-        if !is_gemini && !is_opencode {
+        if !is_gemini {
             if let Some(stdin) = child.stdin.as_mut() {
                 use std::io::Write;
                 stdin.write_all(prompt.as_bytes()).context("write prompt")?;
