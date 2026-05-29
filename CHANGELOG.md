@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.44 - 2026-05-29
+
+- Added live streaming of sub-agent output (stdout) to the TUI transcript so users can see what agents are doing in real time instead of waiting for a single result after the process exits.
+
 ## 0.1.43 - 2026-05-29
 
 - Fixed opencode agent "Argument list too long" (E2BIG) errors on large diffs by piping the prompt through stdin instead of passing it as a command-line argument, avoiding the kernel ARG_MAX limit.

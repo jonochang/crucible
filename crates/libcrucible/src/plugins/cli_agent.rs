@@ -14,11 +14,11 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone)]
 pub struct CliAgentPlugin {
@@ -202,28 +202,68 @@ impl CliAgentPlugin {
             })?;
 
         if !is_gemini {
-            if let Some(stdin) = child.stdin.as_mut() {
-                use std::io::Write;
-                stdin.write_all(prompt.as_bytes()).context("write prompt")?;
-            }
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(prompt.as_bytes()).context("write prompt")?;
         }
 
-        let output = child.wait_with_output().context("wait for CLI output")?;
-        if !output.status.success() {
+        let stdout_handle = child.stdout.take().unwrap();
+        let stderr_handle = child.stderr.take().unwrap();
+
+        let stdout_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let stdout_clone = stdout_buf.clone();
+        let id_stdout = self.id.clone();
+        let stdout_thread = std::thread::spawn(move || {
+            let reader = std::io::BufReader::new(stdout_handle);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    emit_transcript_event(
+                        &id_stdout,
+                        TranscriptDirection::FromAgent,
+                        &line,
+                    );
+                    let mut buf = stdout_clone.lock().unwrap();
+                    buf.extend_from_slice(line.as_bytes());
+                    buf.push(b'\n');
+                }
+            }
+        });
+
+        let stderr_clone = stderr_buf.clone();
+        let stderr_thread = std::thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr_handle);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    let mut buf = stderr_clone.lock().unwrap();
+                    buf.extend_from_slice(line.as_bytes());
+                    buf.push(b'\n');
+                }
+            }
+        });
+
+        let status = child.wait().context("wait for CLI output")?;
+
+        stdout_thread.join().ok();
+        stderr_thread.join().ok();
+
+        let stdout_lock = stdout_buf.lock().unwrap();
+        let stdout = String::from_utf8_lossy(&stdout_lock).to_string();
+        drop(stdout_lock);
+        let stderr_lock = stderr_buf.lock().unwrap();
+        let stderr = String::from_utf8_lossy(&stderr_lock).to_string();
+        drop(stderr_lock);
+
+        if !status.success() {
             debug_log_line(&format!(
                 "[{}] command failed with stderr:\n{}",
-                self.id,
-                String::from_utf8_lossy(&output.stderr)
+                self.id, stderr
             ));
             return Err(anyhow!(
                 "{} failed: {}",
-                self.command,
-                String::from_utf8_lossy(&output.stderr)
+                self.command, stderr
             ));
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         debug_log_line(&format!("[{}] stdout:\n{}", self.id, stdout));
         if !stderr.trim().is_empty() {
             debug_log_line(&format!("[{}] stderr:\n{}", self.id, stderr));
