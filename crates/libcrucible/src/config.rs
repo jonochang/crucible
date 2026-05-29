@@ -440,7 +440,7 @@ judge_plugin = "claude-code"
         let cfg: CrucibleConfig = toml::from_str(raw).expect("parse config");
 
         assert_eq!(cfg.task_packs.review.judge_plugin, "claude-code");
-        assert_eq!(cfg.task_packs.review.analyzer_plugin, "opencode-deepseek");
+        assert_eq!(cfg.task_packs.review.analyzer_plugin, "opencode-glm");
         assert_eq!(cfg.task_packs.review.convergence_plugin, "claude-code");
         assert_eq!(cfg.task_packs.review.structurizer_plugin, "claude-code");
         assert_eq!(cfg.task_packs.review.autofix_plugin, "codex");
