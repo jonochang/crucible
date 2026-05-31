@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.48 - 2026-06-01
+
+- Added convergence breakdown section to the human review report: findings are split into "Converged" (agreed by reviewers, reached quorum) and "Unconverged" (disputed or single-reporter), each listing vote counts per agent so reviewers can see which issues have consensus and which are disputed.
+
 ## 0.1.47 - 2026-05-29
 
 - Changed convergence semantics: convergence now means reviewers agree on the set of valid findings, not that issues have been fixed between rounds. The judge prompt, fallback heuristic, and role descriptions all reflect this. Fixes excessive NOT_CONVERGED verdicts in multi-round reviews.

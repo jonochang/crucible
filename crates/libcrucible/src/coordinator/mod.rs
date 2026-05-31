@@ -608,7 +608,7 @@ impl Coordinator {
             final_judge,
         };
         report.run_summary = Some(run_summary);
-        report.human_review_markdown = Some(render_human_review_markdown(&report, ctx));
+        report.human_review_markdown = Some(render_human_review_markdown(&report, ctx, self.cfg.coordinator.quorum_threshold));
         self.emit(ProgressEvent::Completed(report.clone()));
         self.emit(ProgressEvent::PhaseDone {
             phase: "finalize".to_string(),
@@ -854,6 +854,7 @@ fn render_final_analysis_markdown(
 fn render_human_review_markdown(
     report: &crate::report::ReviewReport,
     ctx: &ReviewContext,
+    quorum: f32,
 ) -> String {
     let mut out = String::from("# Human Review Report\n\n");
     let Some(summary) = &report.run_summary else {
@@ -1016,6 +1017,52 @@ fn render_human_review_markdown(
         out.push_str("\n\n");
     }
 
+    out.push_str("\n## Convergence Breakdown\n\n");
+    {
+        let all_raised_by: HashSet<&String> = report
+            .findings
+            .iter()
+            .flat_map(|f| f.raised_by.iter())
+            .collect();
+        let total_agents = summary.reviewers.len().max(all_raised_by.len());
+        let mut converged_issues: Vec<&CanonicalIssue> = Vec::new();
+        let mut unconverged_issues: Vec<&CanonicalIssue> = Vec::new();
+        for issue in &report.issues {
+            let votes = issue.raised_by.len();
+            let agent_count = if total_agents > 0 { total_agents } else { votes };
+            let reached = if agent_count == 0 { true } else { (votes as f32) / (agent_count as f32) >= quorum };
+            if reached {
+                converged_issues.push(issue);
+            } else {
+                unconverged_issues.push(issue);
+            }
+        }
+        if converged_issues.is_empty() && unconverged_issues.is_empty() {
+            out.push_str("No findings reported across all rounds.\n");
+        } else {
+            if !converged_issues.is_empty() {
+                out.push_str(&format!(
+                    "### Converged (agreed by reviewers, {} quorum)\n\n",
+                    format_quorum(quorum)
+                ));
+                for (idx, issue) in converged_issues.iter().enumerate() {
+                    render_finding_with_votes(&mut out, idx + 1, issue);
+                }
+                out.push('\n');
+            }
+            if !unconverged_issues.is_empty() {
+                out.push_str(&format!(
+                    "### Unconverged (disputed or single-reporter, {} quorum)\n\n",
+                    format_quorum(quorum)
+                ));
+                for (idx, issue) in unconverged_issues.iter().enumerate() {
+                    render_finding_with_votes(&mut out, idx + 1, issue);
+                }
+                out.push('\n');
+            }
+        }
+    }
+
     out.push_str("## Prioritized Actions\n\n");
     let critical = report
         .issues
@@ -1081,6 +1128,42 @@ fn render_action_items(out: &mut String, issues: &[&CanonicalIssue]) {
             out.push_str(&format!("  Suggested fix: {}\n", fix));
         }
     }
+}
+
+fn render_finding_with_votes(out: &mut String, idx: usize, issue: &CanonicalIssue) {
+    let loc = match (&issue.file, issue.line_start) {
+        (Some(file), Some(line)) => format!("{}:{}", file.display(), line),
+        (Some(file), None) => file.display().to_string(),
+        _ => "<unknown>".to_string(),
+    };
+    let votes = format_votes(&issue.raised_by);
+        out.push_str(&format!(
+            "{}. **{}** [`{}`] [{}] — {:?}\n",
+            idx,
+            issue.title,
+            loc,
+            votes,
+            issue.severity,
+        ));
+    if !issue.description.is_empty() {
+        out.push_str(&format!("   {}\n", issue.description));
+    }
+    if let Some(fix) = &issue.suggested_fix {
+        out.push_str(&format!("   Suggested fix: {}\n", fix));
+    }
+}
+
+fn format_votes(raised_by: &[String]) -> String {
+    if raised_by.is_empty() {
+        return "0 votes".to_string();
+    }
+    let count = raised_by.len();
+    let agents = raised_by.join(", ");
+    format!("{} vote{}: {}", count, if count > 1 { "s" } else { "" }, agents)
+}
+
+fn format_quorum(quorum: f32) -> String {
+    format!("{:.0}%", quorum * 100.0)
 }
 
 fn summarize_markdown_paragraph(markdown: &str) -> String {
