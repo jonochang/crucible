@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.49 - 2026-06-10
+
+- Pinned claude-code plugin to `--model opus` in default config, ensuring Claude reviews use Opus instead of relying on the CLI's default model which may change.
+
 ## 0.1.48 - 2026-06-01
 
 - Added convergence breakdown section to the human review report: findings are split into "Converged" (agreed by reviewers, reached quorum) and "Unconverged" (disputed or single-reporter), each listing vote counts per agent so reviewers can see which issues have consensus and which are disputed.

@@ -231,6 +231,8 @@ impl Default for CrucibleConfig {
                                 "-p".to_string(),
                                 "--output-format".to_string(),
                                 "json".to_string(),
+                                "--model".to_string(),
+                                "opus".to_string(),
                             ],
                         },
                     );
