@@ -282,7 +282,7 @@ impl Default for CrucibleConfig {
                             args: vec![
                                 "run".to_string(),
                                 "--model".to_string(),
-                                "zai-coding-plan/glm-5.1".to_string(),
+                                "zai-coding-plan/glm-5.2".to_string(),
                                 "--format".to_string(),
                                 "json".to_string(),
                             ],

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.50 - 2026-06-19
+
+- Bumped default `opencode-glm` model from `zai-coding-plan/glm-5.1` to `zai-coding-plan/glm-5.2`.
+
 ## 0.1.49 - 2026-06-10
 
 - Pinned claude-code plugin to `--model opus` in default config, ensuring Claude reviews use Opus instead of relying on the CLI's default model which may change.

@@ -203,8 +203,8 @@ reviewer_focus = "Correctness, edge cases, and cross-cutting concerns"
 
 [plugins.opencode-glm]
 command = "opencode"
-args = ["run", "--model", "zai-coding-plan/glm-5.1", "--format", "json"]
-persona = "GLM-5.1 Reviewer"
+args = ["run", "--model", "zai-coding-plan/glm-5.2", "--format", "json"]
+persona = "GLM-5.2 Reviewer"
 role_weight = 1.5
 reviewer_focus = "Deep semantic analysis and logical correctness"
 ```
